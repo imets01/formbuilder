@@ -236,3 +236,7 @@ def preview_page():
     language = request.args.get('lang', '').lower()
     html = documents.get(language) or next(iter(documents.values()))
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
