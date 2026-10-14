@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Node / Angular
+node_modules/
+dist/
+
+# Locally-saved forms (FORMS_DIR default)
+projects/
+
+# Stage-timing output (FORMBUILDER_METRICS)
+backend/metrics/

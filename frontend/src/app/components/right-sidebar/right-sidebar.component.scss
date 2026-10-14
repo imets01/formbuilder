@@ -1,0 +1,27 @@
+:host ::ng-deep .properties-tabs {
+  .mat-mdc-tab-header {
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .mat-mdc-tab {
+    min-width: 0;
+    flex: 1;
+  }
+}
+
+:host ::ng-deep .advanced-panel {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 4px;
+
+  .mat-expansion-panel-header {
+    height: 44px;
+  }
+
+  .mat-expansion-panel-header.mat-expanded {
+    height: 44px;
+  }
+
+  .mat-expansion-panel-body {
+    padding: 0 0 12px;
+  }
+}

@@ -1,0 +1,14 @@
+:host ::ng-deep .components-accordion {
+  .mat-expansion-panel-body {
+    padding: 0 4px 8px;
+  }
+
+  .mat-expansion-panel-header {
+    height: 40px;
+    padding: 0 8px;
+  }
+
+  .mat-expansion-panel-header.mat-expanded {
+    height: 40px;
+  }
+}

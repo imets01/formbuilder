@@ -1,0 +1,56 @@
+<aside class="w-full h-full bg-white border-r border-gray-200 flex flex-col">
+  <div class="p-4 border-b border-gray-200">
+    <h2 class="text-base font-semibold text-gray-900 mb-3">Components</h2>
+    <div class="relative">
+      <mat-icon class="!w-[18px] !h-[18px] !text-[18px] absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400">search</mat-icon>
+      <input
+        type="text"
+        [ngModel]="search()"
+        (ngModelChange)="search.set($event)"
+        placeholder="Search components..."
+        class="w-full h-9 pl-8 pr-3 text-sm bg-gray-50 border border-gray-200 rounded-md text-gray-700 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+    </div>
+  </div>
+
+  <div class="flex-1 overflow-y-auto px-2 py-2"
+       cdkDropList
+       id="sidebarList"
+       [cdkDropListConnectedTo]="sectionDropIds()"
+       [cdkDropListSortingDisabled]="true">
+    <mat-accordion multi displayMode="flat" class="components-accordion">
+      @for (category of filteredCategories(); track category.name) {
+        <mat-expansion-panel expanded class="!shadow-none !bg-transparent !rounded-none">
+          <mat-expansion-panel-header class="!px-2">
+            <mat-panel-title class="!text-sm !font-semibold !text-gray-700">
+              {{ category.name }}
+            </mat-panel-title>
+          </mat-expansion-panel-header>
+<div class="space-y-1 pb-2">
+            @for (component of category.components; track component.name) {
+              <div [cdkDragData]="component"
+                   cdkDrag
+                   [attr.data-tour]="'palette-' + component.id"
+                   class="flex items-center gap-3 px-3 py-2 rounded-md cursor-move hover:bg-gray-100 transition-colors">
+                <mat-icon class="!w-5 !h-5 !text-[20px] text-gray-500 shrink-0">
+                  {{ component.icon }}
+                </mat-icon>
+                <div class="flex flex-col leading-tight min-w-0">
+                  <span class="text-sm text-gray-700">{{ component.name }}</span>
+                  @if (component.description) {
+                    <span class="text-[11px] text-gray-500">{{ component.description }}</span>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        </mat-expansion-panel>
+      }
+    </mat-accordion>
+
+    @if (filteredCategories().length === 0) {
+      <div class="text-sm text-gray-500 text-center py-6 px-3">
+        No components match "{{ search() }}"
+      </div>
+    }
+  </div>
+</aside>

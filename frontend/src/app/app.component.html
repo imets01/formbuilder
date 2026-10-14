@@ -1,0 +1,75 @@
+<app-landing-page *ngIf="formState.view() === 'landing'"></app-landing-page>
+
+<div *ngIf="formState.view() === 'editor'" class="h-screen w-screen flex flex-col bg-gray-50">
+  <app-top-nav-bar class="w-full flex-shrink-0"></app-top-nav-bar>
+
+  @if (formState.importWarnings().length) {
+    <div class="flex-shrink-0 bg-amber-50 border-b border-amber-200 text-amber-900">
+      <div class="px-6 py-2 flex items-start gap-3">
+        <mat-icon class="!w-5 !h-5 !text-[20px] text-amber-600 mt-0.5">warning</mat-icon>
+        <div class="flex-1 min-w-0">
+          <button type="button" (click)="toggleWarnings()"
+                  class="flex items-center gap-1 text-sm font-semibold hover:underline">
+            {{ formState.importWarnings().length }} row(s) in the imported spreadsheet couldn't be reconstructed
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px] transition-transform"
+                      [class.rotate-180]="warningsExpanded()">expand_more</mat-icon>
+          </button>
+          @if (warningsExpanded()) {
+            <ul class="mt-1.5 space-y-0.5 text-xs text-amber-800 max-h-40 overflow-auto pr-2">
+              @for (w of formState.importWarnings(); track $index) {
+                <li class="flex gap-2">
+                  <span class="text-amber-400">•</span>
+                  <span class="font-mono break-all">{{ w }}</span>
+                </li>
+              }
+            </ul>
+            <p class="mt-1.5 text-[11px] text-amber-700">
+              These rows were skipped — usually a typo'd or unsupported <span class="font-mono">Format PSPH</span>
+              value in the source. Fix them in the spreadsheet and re-import, or add the fields manually.
+            </p>
+          }
+        </div>
+        <button type="button" (click)="formState.dismissImportWarnings()"
+                title="Dismiss" class="p-1 rounded hover:bg-amber-100 text-amber-600 flex-shrink-0">
+          <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">close</mat-icon>
+        </button>
+      </div>
+    </div>
+  }
+
+  <div class="flex flex-1 w-full overflow-hidden" [class.select-none]="resizingSidebar()">
+    <app-left-sidebar class="w-72 flex-shrink-0"></app-left-sidebar>
+    <app-canvas class="flex-1 flex flex-col min-w-0"></app-canvas>
+    <div role="separator"
+         aria-orientation="vertical"
+         aria-label="Resize properties panel"
+         tabindex="0"
+         [attr.aria-valuenow]="rightSidebarWidth()"
+         [attr.aria-valuemin]="minSidebarWidth"
+         [attr.aria-valuemax]="maxSidebarWidth()"
+         (pointerdown)="onSidebarResizeStart($event)"
+         (pointermove)="onSidebarResizeMove($event)"
+         (pointerup)="onSidebarResizeEnd($event)"
+         (pointercancel)="onSidebarResizeEnd($event)"
+         (dblclick)="resetSidebarWidth()"
+         (keydown)="onSidebarResizeKeydown($event)"
+         title="Drag to resize — double-click to reset"
+         class="w-1 flex-shrink-0 cursor-col-resize bg-gray-200 hover:bg-blue-400 focus:bg-blue-400 focus:outline-none transition-colors"
+         [class.bg-blue-500]="resizingSidebar()"></div>
+    <app-right-sidebar class="flex-shrink-0" [style.width.px]="rightSidebarWidth()"></app-right-sidebar>
+  </div>
+  <app-tour></app-tour>
+</div>
+
+@if (telemetry.enabled) {
+  <div style="position:fixed;bottom:12px;right:12px;z-index:10000;display:flex;align-items:center;
+              gap:10px;background:#111827;color:#e5e7eb;border-radius:8px;padding:8px 12px;
+              box-shadow:0 4px 14px rgba(0,0,0,.35);font:500 12px/1 sans-serif;">
+    <span style="opacity:.7;">telemetry</span>
+    <span style="background:#065f46;color:#d1fae5;padding:3px 8px;border-radius:5px;font-weight:700;">{{ telemetry.sessionId }}</span>
+    <span style="opacity:.7;">{{ telemetry.eventCount() }} events</span>
+    <button type="button" (click)="telemetry.export()"
+            style="background:#2563eb;color:#fff;border:none;border-radius:5px;padding:5px 10px;
+                   font:600 12px sans-serif;cursor:pointer;">Export</button>
+  </div>
+}

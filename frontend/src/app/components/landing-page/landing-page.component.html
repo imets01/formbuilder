@@ -1,0 +1,107 @@
+<div class="min-h-screen w-full bg-gray-50">
+  <header class="bg-white text-gray-900 px-6 py-3 border-b border-gray-200 w-full">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-md bg-blue-50 flex items-center justify-center">
+        <mat-icon class="!w-5 !h-5 !text-[20px] text-blue-600">description</mat-icon>
+      </div>
+      <h1 class="text-lg font-semibold text-gray-900">FormBuilder</h1>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-8 py-10">
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h2 class="text-2xl font-semibold text-gray-900">My Forms</h2>
+        <p class="text-sm text-gray-500 mt-1">Forms are saved on the server and visible from any browser.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <input
+          #jsonInput
+          type="file"
+          accept="application/json,.json"
+          class="hidden"
+          (change)="onImportFileSelected($event)" />
+        <input
+          #excelInput
+          type="file"
+          accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+          class="hidden"
+          (change)="onImportExcelSelected($event)" />
+        <div class="relative">
+          <button
+            type="button"
+            [disabled]="importing()"
+            [matMenuTriggerFor]="importMenu"
+            title="Import an existing form"
+            class="inline-flex items-center gap-2 h-10 px-4 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-60 transition-colors">
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">upload</mat-icon>
+            {{ importing() ? 'Importing…' : 'Import' }}
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px] -mr-1 text-gray-400">arrow_drop_down</mat-icon>
+          </button>
+          <mat-menu #importMenu="matMenu" xPosition="before">
+            <button mat-menu-item type="button" class="!h-auto !py-2.5" (click)="jsonInput.click()">
+              <div class="flex items-start gap-3">
+                <mat-icon class="!w-[18px] !h-[18px] !text-[18px] !m-0 mt-0.5 text-gray-500">data_object</mat-icon>
+                <span class="block whitespace-normal">
+                  <span class="block text-sm font-medium text-gray-900 leading-5">Form as JSON</span>
+                  <span class="block text-xs text-gray-500 leading-4">A .json file exported from FormBuilder</span>
+                </span>
+              </div>
+            </button>
+            <button mat-menu-item type="button" class="!h-auto !py-2.5" (click)="excelInput.click()">
+              <div class="flex items-start gap-3">
+                <mat-icon class="!w-[18px] !h-[18px] !text-[18px] !m-0 mt-0.5 text-gray-500">table_view</mat-icon>
+                <span class="block whitespace-normal">
+                  <span class="block text-sm font-medium text-gray-900 leading-5">Excel specification</span>
+                  <span class="block text-xs text-gray-500 leading-4">A PSPH spec workbook (.xlsx or .csv)</span>
+                </span>
+              </div>
+            </button>
+          </mat-menu>
+        </div>
+        <button
+          type="button"
+          (click)="newForm()"
+          class="inline-flex items-center gap-2 h-10 px-4 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors">
+          <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">add</mat-icon>
+          New Form
+        </button>
+      </div>
+    </div>
+
+    <div *ngIf="forms().length === 0" class="bg-white border border-dashed border-gray-300 rounded-lg p-12 text-center">
+      <mat-icon class="!w-10 !h-10 !text-[40px] text-gray-300">inbox</mat-icon>
+      <p class="mt-3 text-gray-600">No forms yet.</p>
+      <p class="text-sm text-gray-400">Click "New Form" to get started.</p>
+    </div>
+
+    <ul *ngIf="forms().length > 0" class="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
+      <li
+        *ngFor="let f of forms()"
+        (click)="openForm(f.id)"
+        class="flex items-center justify-between px-5 py-4 hover:bg-gray-50 cursor-pointer transition-colors">
+        <div class="min-w-0">
+          <p class="text-sm font-medium text-gray-900 truncate">{{ f.title || 'Untitled Form' }}</p>
+          <p class="text-xs text-gray-500 mt-0.5">Last edited {{ formatDate(f.updatedAt) }}</p>
+        </div>
+        <div class="ml-4 flex items-center gap-1">
+          <button
+            type="button"
+            (click)="exportForm($event, f.id)"
+            class="inline-flex items-center justify-center w-9 h-9 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            aria-label="Export form"
+            title="Export as JSON">
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">download</mat-icon>
+          </button>
+          <button
+            type="button"
+            (click)="deleteForm($event, f.id)"
+            class="inline-flex items-center justify-center w-9 h-9 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+            aria-label="Delete form">
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">delete</mat-icon>
+          </button>
+        </div>
+      </li>
+    </ul>
+  </main>
+</div>

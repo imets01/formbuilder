@@ -1,0 +1,426 @@
+<main class="flex-1 w-full h-full bg-gray-50 overflow-auto p-8">
+  <div class="max-w-4xl mx-auto space-y-4">
+    @if (!formState.hasMetadataSection()) {
+      <div class="flex justify-center">
+        <button type="button"
+                (click)="addMetadataSection()"
+                class="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-full shadow-sm hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 transition-colors">
+          <mat-icon class="!w-4 !h-4 !text-[16px]">edit_note</mat-icon>
+          Add form header
+        </button>
+      </div>
+    }
+    <div cdkDropList
+         id="sectionList"
+         cdkDropListLockAxis="y"
+         [cdkDropListData]="formState.sections()"
+         [cdkDropListEnterPredicate]="acceptsSection"
+         (cdkDropListDropped)="dropSection($event)"
+         class="space-y-4">
+    @for (section of formState.sections(); track section.id; let sIdx = $index) {
+      <div cdkDrag
+           [cdkDragData]="section"
+           [cdkDragDisabled]="section.isMetadata"
+           class="bg-white rounded-lg shadow-sm border transition-colors"
+           [ngClass]="[section.isMetadata ? 'p-3' : 'p-4', sectionBorderClass(section, sIdx)]"
+           [class.bg-blue-50/30]="section.isMetadata"
+           [class.bg-amber-50/30]="section.isAggregate"
+           [class.border-dashed]="isConditionalSection(section)"
+           [class.bg-violet-50/30]="isConditionalSection(section) && !section.isMetadata && !section.isAggregate">
+        <div class="pb-3 mb-5 border-b border-dashed border-gray-200 flex items-center gap-2"
+             [class.cursor-pointer]="!section.isMetadata"
+             [attr.data-tour]="'section-' + sIdx"
+             (click)="selectSectionFromHeader(sIdx, section)">
+          @if (!section.isMetadata) {
+            <mat-icon cdkDragHandle
+                      class="!w-4 !h-4 !text-[16px] text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing shrink-0"
+                      title="Drag to reorder this section"
+                      (click)="$event.stopPropagation()">drag_indicator</mat-icon>
+          }
+          @if (section.isMetadata) {
+            <mat-icon class="!w-4 !h-4 !text-[16px] text-blue-600">edit_note</mat-icon>
+            <span class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Section</span>
+            <span class="text-xs font-mono text-gray-600">{{ section.title }}</span>
+            <span class="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-100 rounded px-1.5 py-0.5">Form Header</span>
+          } @else if (section.isAggregate) {
+            <mat-icon class="!w-4 !h-4 !text-[16px] text-amber-600">repeat</mat-icon>
+            <span class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Section</span>
+            <button
+              type="button"
+              (click)="formState.selectSection(sIdx, 'content')"
+              title="Section heading shown in the form — click to edit translations."
+              class="w-64 h-7 px-2 text-xs text-left text-gray-700 bg-gray-50 rounded truncate hover:bg-gray-100 transition-colors">
+              @if (getSectionHeading(section)) {
+                {{ getSectionHeading(section) }}
+              } @else {
+                <span class="text-gray-300">aggregate_name</span>
+              }
+            </button>
+            <span class="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">Aggregate</span>
+          } @else {
+            <mat-icon class="!w-4 !h-4 !text-[16px] text-gray-400">folder</mat-icon>
+            <span class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Section</span>
+            <button
+              type="button"
+              (click)="formState.selectSection(sIdx, 'content')"
+              title="Section heading shown in the form — click to edit translations."
+              class="w-64 h-7 px-2 text-xs text-left text-gray-700 bg-gray-50 rounded truncate hover:bg-gray-100 transition-colors">
+              @if (getSectionHeading(section)) {
+                {{ getSectionHeading(section) }}
+              } @else {
+                <span class="text-gray-300">section_name</span>
+              }
+            </button>
+          }
+          @if (isConditionalSection(section)) {
+            <span class="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-violet-700 bg-violet-100 rounded px-1.5 py-0.5"
+                  title="This section and its fields are only shown when the linked option is selected.">
+              <mat-icon class="!w-3 !h-3 !text-[12px]">rule</mat-icon>
+              Conditional
+            </span>
+          }
+          <span class="flex-1"></span>
+          @if (section.isMetadata || section.isAggregate || formState.sections().length > 1) {
+            <button
+              type="button"
+              (click)="removeSection(sIdx); $event.stopPropagation()"
+              class="inline-flex items-center justify-center p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+              title="Remove section">
+              <mat-icon class="!w-4 !h-4 !text-[16px] !leading-4">delete_outline</mat-icon>
+            </button>
+          }
+        </div>
+
+        @if (section.isAggregate) {
+          <p class="text-[11px] text-gray-500 mb-2 px-1">Drop fields below — they form the template repeated once per group.</p>
+        }
+
+        <div cdkDropList
+             [id]="'canvasList_' + sIdx"
+             [cdkDropListData]="{ sectionIndex: sIdx, components: section.components }"
+             [cdkDropListConnectedTo]="componentListIds()"
+             [cdkDropListEnterPredicate]="acceptsComponent"
+             (cdkDropListDropped)="drop($event)"
+             class="min-h-[60px] drop-zone"
+             [ngClass]="dropZoneClass(section)">
+          @if (section.components.length === 0) {
+            <div class="text-center text-gray-500 py-10 border-2 border-dashed border-gray-200 rounded-lg empty-zone">
+              <mat-icon class="!w-8 !h-8 !text-[32px] text-gray-300 mb-1">add_box</mat-icon>
+              <p class="text-sm">Drag components here</p>
+            </div>
+          }
+
+          @for (component of section.components; track component.instanceId; let i = $index) {
+            <div cdkDrag
+                 [cdkDragData]="component"
+                 [cdkDragDisabled]="isMetadataComponent(component.id)"
+                 [attr.data-tour]="'canvas-field-' + component.instanceId"
+                 class="rounded-md cursor-pointer transition-all"
+                 [ngClass]="{
+                   'px-3 py-1': isMetadataComponent(component.id),
+                   'group relative p-3 pl-12 pr-9 border': !isMetadataComponent(component.id),
+                   'border-blue-500 ring-1 ring-blue-200': !isMetadataComponent(component.id) && isSelected(sIdx, i),
+                   'border-transparent hover:border-gray-200': !isMetadataComponent(component.id) && !isSelected(sIdx, i),
+                   'bg-blue-50': isMetadataComponent(component.id) && isSelected(sIdx, i),
+                   'bg-white hover:bg-gray-50': isMetadataComponent(component.id) && !isSelected(sIdx, i)
+                 }"
+                 (click)="selectComponent(sIdx, i)">
+
+              @if (!isMetadataComponent(component.id)) {
+                <span class="absolute left-0 top-[18px] h-[19px] w-12 flex items-center justify-center gap-0.5 select-none"
+                      [title]="idTooltip(component)">
+                  @for (chip of idChips(component); track $index) {
+                    <span class="inline-flex items-center justify-center shrink-0 h-4 min-w-[16px] px-[3px] rounded bg-blue-50 text-[10px] font-medium tabular-nums leading-none text-blue-600">{{ chip }}</span>
+                  }
+                </span>
+                <button
+                  type="button"
+                  (click)="removeComponent(sIdx, i); $event.stopPropagation()"
+                  class="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-opacity"
+                  [ngClass]="isSelected(sIdx, i) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'"
+                  title="Remove component (Del)">
+                  <mat-icon class="!w-4 !h-4 !text-[16px] !leading-4">delete_outline</mat-icon>
+                </button>
+              }
+
+              @if (isMetadataComponent(component.id)) {
+                <div class="flex items-baseline gap-3">
+                  <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide w-32 shrink-0">{{ metadataLabel(component.id) }}</span>
+                  <span class="flex-1 text-sm text-gray-800" [class.text-gray-400]="!metadataDisplayValue(component)" [class.italic]="!metadataDisplayValue(component)">
+                    {{ metadataDisplayValue(component) || 'Click to edit…' }}
+                  </span>
+                </div>
+              } @else {
+
+              @if (component.id === 'text') {
+                <p [class]="'whitespace-pre-wrap text-gray-800 ' + fontClass(component.fontSize)">
+                  {{ getDisplayValue(component, 'content') || 'Your text here' }}
+                </p>
+              } @else if (component.id === 'electronic-consent') {
+                @let ct = consentText();
+                <div class="space-y-3 text-sm text-gray-700" [title]="getMouseOverTooltip(component)">
+                  <p class="text-gray-600 leading-relaxed">{{ ct.intro }}</p>
+                  <div class="flex items-start gap-4">
+                    <div class="w-44 shrink-0 pt-0.5 text-sm font-semibold text-gray-800 leading-snug">
+                      {{ ct.label }}
+                      <span class="text-red-500 ml-0.5">*</span>
+                    </div>
+                    <div class="flex-1 min-w-0 space-y-1">
+                      <label class="flex items-center gap-2">
+                        <input type="radio" [name]="component.instanceId" disabled class="text-blue-600 cursor-not-allowed" />
+                        <span>{{ ct.yes }}</span>
+                      </label>
+                      <label class="flex items-center gap-2">
+                        <input type="radio" [name]="component.instanceId" disabled class="text-blue-600 cursor-not-allowed" />
+                        <span>{{ ct.no }}</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              } @else {
+              <div class="flex items-start gap-4">
+                <!-- Label column: fixed width on the left, mirroring the real form layout. -->
+                <div class="w-44 shrink-0 pt-1.5 text-sm font-medium text-gray-700 leading-snug">
+                  @if (component.id === 'split-input') {
+                    {{ getSplitLabel(component, 'a') }} / {{ getSplitLabel(component, 'b') }}
+                  } @else if (component.id !== 'button' && component.id !== 'single-checkbox') {
+                    {{ getDisplayValue(component, 'title') }}
+                  }
+                  @if (component.required) {
+                    <span class="text-red-500 ml-0.5">*</span>
+                  }
+                </div>
+
+                <!-- Input column: takes the remaining width. -->
+                <div class="flex-1 min-w-0">
+                @if (component.id === 'text-input') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <input type="text"
+                           [placeholder]="getDisplayValue(component, 'placeholder')"
+                           disabled
+                           class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                  </span>
+                }
+
+                @if (component.id === 'text-area') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <textarea [placeholder]="getDisplayValue(component, 'placeholder')"
+                              disabled
+                              rows="4"
+                              class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400 resize-none"></textarea>
+                  </span>
+                }
+
+                @if (component.id === 'date') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <input type="date"
+                           disabled
+                           class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600" />
+                  </span>
+                }
+
+                @if (component.id === 'number') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <input type="number"
+                           [placeholder]="getDisplayValue(component, 'placeholder')"
+                           disabled
+                           class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                  </span>
+                }
+
+                @if (component.id === 'email') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <input type="email"
+                           [placeholder]="getDisplayValue(component, 'placeholder')"
+                           disabled
+                           class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                  </span>
+                }
+
+                @if (component.id === 'phone') {
+                  <span class="block" [title]="getMouseOverTooltip(component)">
+                    <input type="tel"
+                           [placeholder]="getDisplayValue(component, 'placeholder')"
+                           disabled
+                           class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                  </span>
+                }
+
+                @if (component.id === 'button') {
+                  <span class="inline-block" [title]="getMouseOverTooltip(component)">
+                    <button type="button"
+                            disabled
+                            class="inline-flex items-center gap-2 h-10 px-5 text-sm font-medium text-white bg-blue-600 rounded-md opacity-90">
+                      {{ getDisplayValue(component, 'title') || 'Button' }}
+                    </button>
+                  </span>
+                }
+
+                @if (component.id === 'single-checkbox') {
+                  <label class="flex items-center gap-2 text-sm text-gray-700" [title]="getMouseOverTooltip(component)">
+                    <input type="checkbox"
+                           disabled
+                           class="text-blue-600 cursor-not-allowed rounded" />
+                    <span>{{ getDisplayValue(component, 'title') }}</span>
+                    @if (component.required) {
+                      <span class="text-red-500 ml-0.5">*</span>
+                    }
+                  </label>
+                }
+
+                @if (component.id === 'radio') {
+                  <div class="space-y-2" [title]="getMouseOverTooltip(component)">
+                    @for (opt of component.options ?? []; track opt.optionId) {
+                      <label class="flex items-center gap-2 text-sm text-gray-700">
+                        <input type="radio"
+                               [name]="component.instanceId"
+                               disabled
+                               class="text-blue-600 cursor-not-allowed" />
+                        <span>{{ getOptionLabel(opt) }}</span>
+                      </label>
+                    }
+                  </div>
+                }
+
+                @if (component.id === 'checkbox') {
+                  <div class="space-y-2" [title]="getMouseOverTooltip(component)">
+                    @for (opt of component.options ?? []; track opt.optionId) {
+                      <label class="flex items-center gap-2 text-sm text-gray-700">
+                        <input type="checkbox"
+                               disabled
+                               class="text-blue-600 cursor-not-allowed rounded" />
+                        <span>{{ getOptionLabel(opt) }}</span>
+                      </label>
+                    }
+                  </div>
+                }
+
+                @if (component.id === 'select-single' || component.id === 'korrespondenzsprache') {
+                  <select [title]="getMouseOverTooltip(component)"
+                          class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400">
+                    <option>—</option>
+                    @for (opt of component.options ?? []; track opt.optionId) {
+                      <option>{{ getOptionLabel(opt) }}</option>
+                    }
+                  </select>
+                }
+
+                @if (component.id === 'upload-single' || component.id === 'upload-multi') {
+                  <div class="border-2 border-dashed border-gray-300 rounded-md p-5 text-center bg-gray-50 text-gray-500"
+                       [title]="getMouseOverTooltip(component)">
+                    <mat-icon class="!w-8 !h-8 !text-[32px] text-gray-400">{{ component.id === 'upload-multi' ? 'cloud_upload' : 'upload_file' }}</mat-icon>
+                    <p class="text-sm mt-1">
+                      Click to upload {{ component.id === 'upload-multi' ? 'files' : 'a file' }}
+                    </p>
+                    @if (component.fileFormats) {
+                      <p class="text-xs text-gray-400 mt-1">Allowed: {{ component.fileFormats }}</p>
+                    }
+                    @if (component.id === 'upload-multi' && component.maxLength) {
+                      <p class="text-xs text-gray-400">Max {{ component.maxLength }} files</p>
+                    }
+                  </div>
+                }
+
+                @if (component.id === 'select-multi' || component.id === 'catalog-countries' || component.id === 'catalog-cantons') {
+                  <div class="grid grid-cols-[1fr_auto_1fr] gap-3 items-stretch" [title]="getMouseOverTooltip(component)">
+                    <div class="flex flex-col">
+                      <p class="text-[11px] text-gray-500 mb-1">Available</p>
+                      <select #leftBox multiple
+                              class="flex-1 px-2 py-1.5 border border-gray-300 rounded-md bg-white text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400"
+                              size="5">
+                        @for (opt of availableOptions(component); track opt.optionId) {
+                          <option [value]="opt.optionId">{{ getOptionLabel(opt) }}</option>
+                        }
+                      </select>
+                    </div>
+                    <div class="flex flex-col gap-2 justify-center pt-5">
+                      <button type="button"
+                              (click)="moveOptionsRight(component, leftBox)"
+                              class="p-1 rounded border border-gray-300 hover:bg-gray-100 text-gray-600"
+                              title="Move to selected">
+                        <mat-icon class="!w-5 !h-5 !text-[20px]">chevron_right</mat-icon>
+                      </button>
+                      <button type="button"
+                              (click)="moveOptionsLeft(component, rightBox)"
+                              class="p-1 rounded border border-gray-300 hover:bg-gray-100 text-gray-600"
+                              title="Move to available">
+                        <mat-icon class="!w-5 !h-5 !text-[20px]">chevron_left</mat-icon>
+                      </button>
+                    </div>
+                    <div class="flex flex-col">
+                      <p class="text-[11px] text-gray-500 mb-1">Selected</p>
+                      <select #rightBox multiple
+                              class="flex-1 px-2 py-1.5 border border-gray-300 rounded-md bg-white text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400"
+                              size="5">
+                        @for (opt of selectedMultiOptions(component); track opt.optionId) {
+                          <option [value]="opt.optionId">{{ getOptionLabel(opt) }}</option>
+                        }
+                      </select>
+                    </div>
+                  </div>
+                }
+
+                @if (component.id === 'split-input') {
+                  <div class="grid gap-3" [style.grid-template-columns]="splitGridTemplate(component)">
+                    <span class="block min-w-0" [title]="getSplitMouseOverTooltip(component, 'a')">
+                      <input type="text"
+                             [placeholder]="getSplitPlaceholder(component, 'a')"
+                             disabled
+                             class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                    </span>
+                    <span class="block min-w-0" [title]="getSplitMouseOverTooltip(component, 'b')">
+                      <input type="text"
+                             [placeholder]="getSplitPlaceholder(component, 'b')"
+                             disabled
+                             class="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600 placeholder-gray-400" />
+                    </span>
+                  </div>
+                }
+                </div>
+              </div>
+              }
+              }
+            </div>
+          }
+        </div>
+
+        @if (section.isMetadata) {
+          <div class="mt-3 pt-3 border-t border-dashed border-blue-200/70">
+            <div class="flex items-center gap-3 px-3 py-2"
+                 title="Same as Developer ▸ Contact email. Used as the form's contact/recipient address — it is not displayed in the form.">
+              <mat-icon class="!w-4 !h-4 !text-[16px] text-slate-400 shrink-0">alternate_email</mat-icon>
+              <div class="flex flex-col shrink-0 w-32">
+                <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">Contact Email</span>
+                <span class="text-[10px] text-gray-400 leading-tight">Not shown in the form</span>
+              </div>
+              <input
+                type="email"
+                [ngModel]="formState.deployment().contactEmail"
+                (ngModelChange)="formState.updateDeployment({ contactEmail: $event })"
+                (click)="$event.stopPropagation()"
+                placeholder="Click to edit…"
+                class="flex-1 min-w-0 text-sm text-gray-800 bg-white border border-slate-200 rounded px-2 py-1 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-200 placeholder-gray-400" />
+            </div>
+          </div>
+        }
+      </div>
+    }
+    </div>
+
+    <div class="flex justify-center gap-2">
+      <button type="button"
+              (click)="formState.addSection()"
+              data-tour="add-section"
+              class="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-full shadow-sm hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 transition-colors">
+        <mat-icon class="!w-4 !h-4 !text-[16px]">add</mat-icon>
+        Add new section
+      </button>
+      <button type="button"
+              (click)="formState.addAggregateSection()"
+              class="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-full shadow-sm hover:border-amber-300 hover:text-amber-700 hover:bg-amber-50 transition-colors">
+        <mat-icon class="!w-4 !h-4 !text-[16px]">repeat</mat-icon>
+        Add aggregate
+      </button>
+    </div>
+  </div>
+</main>

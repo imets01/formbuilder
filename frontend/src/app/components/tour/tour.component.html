@@ -1,0 +1,29 @@
+@if (tour.step(); as step) {
+  <div class="tour-layer">
+    <div #ring class="tour-ring" aria-hidden="true"></div>
+    <div #beacon class="tour-beacon" aria-hidden="true"></div>
+
+    <div #card class="tour-card">
+      <div class="tour-card-inner" role="status" aria-live="polite">
+        <p class="tour-copy">{{ step.copy() }}</p>
+        @if (tour.isFirstStep()) {
+          <button type="button" class="tour-skip" (click)="tour.dismiss()">Skip</button>
+        }
+      </div>
+    </div>
+  </div>
+}
+
+@if (tour.offering()) {
+  <div class="tour-panel" role="status">
+    <span>Three more? The parts a spreadsheet can't do.</span>
+    <button type="button" class="tour-go" (click)="tour.acceptOffer()">Show me</button>
+    <button type="button" class="tour-no" (click)="tour.declineOffer()">No thanks</button>
+  </div>
+}
+
+@if (tour.farewell()) {
+  <div class="tour-panel" role="status">
+    <span>That's the loop. Build the rest the same way.</span>
+  </div>
+}
