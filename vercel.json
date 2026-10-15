@@ -1,0 +1,15 @@
+{
+  "framework": null,
+  "installCommand": "cd frontend && npm ci",
+  "buildCommand": "cd frontend && npm run build -- --configuration production",
+  "outputDirectory": "frontend/dist/frontend/browser",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/preview", "destination": "/api/index" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "excludeFiles": "{frontend/**,docs/**,backend/test_*.py}"
+    }
+  }
+}
