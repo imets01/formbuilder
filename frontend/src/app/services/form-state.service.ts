@@ -6,6 +6,7 @@ import { FormStorageService, SavedForm, SavedFormPayload, SavedFormSummary, Depl
 import { DEFAULT_FORM_TITLE, isFormTitleTaken } from './form-title';
 import { COUNTRY_CATALOG, CANTON_CATALOG, CatalogEntry } from './catalogs';
 import { TelemetryService } from './telemetry.service';
+import { AuthService } from './auth.service';
 import { environment } from '../../environments/environment';
 
 export type AppView = 'landing' | 'editor';
@@ -254,6 +255,7 @@ export const ID_RANGE_SEPARATOR = '–';
 export class FormStateService {
   private storage = inject(FormStorageService);
   private telemetry = inject(TelemetryService);
+  private auth = inject(AuthService);
 
   sections = signal<FormSection[]>([
     { id: `Section_${Date.now()}`, title: 'Section', components: [] }
@@ -334,6 +336,8 @@ export class FormStateService {
     effect(() => {
       const id = this.currentFormId();
       if (!id || this.view() !== 'editor') return;
+      // Demo visitors edit in memory only; the server would refuse the save anyway.
+      if (!this.auth.canWrite()) return;
       // Track signals so the effect re-runs on edits.
       const payload: SavedFormPayload = {
         sections: this.sections(),
@@ -515,22 +519,38 @@ export class FormStateService {
     this.refreshSavedForms();
     this.titleConflict.set(null);
     this.storage.load(id).subscribe(saved => {
-      if (!saved) return;
-      const p = saved.payload;
-      this.lastSavedTitle = saved.title ?? p.formTitle ?? DEFAULT_FORM_TITLE;
-      this.sections.set(this.normalizeSections(p.sections ?? []));
-      this.formTitle.set(p.formTitle ?? DEFAULT_FORM_TITLE);
-      this.disableInputSize.set(!!p.disableInputSize);
-      this.disableMouseOver.set(!!p.disableMouseOver);
-      this.deployment.set({ ...emptyDeployment(), ...(p.deployment ?? {}) });
-      this.selectedSectionIndex.set(null);
-      this.selectedComponentIndex.set(null);
-      this.currentFormId.set(saved.id);
-      this.hasSourceSpreadsheet.set(!!saved.hasSource);
-      this.view.set('editor');
-      this.resetHistory();
-      this.telemetry.record('formOpen', 'saved', saved.id);
+      if (saved) this.applySaved(saved, 'saved');
     });
+  }
+
+  /** Open an imported form without storing it — what demo visitors get instead of a save. */
+  openUnsaved(payload: SavedFormPayload) {
+    this.importWarnings.set([]);
+    this.displayLanguage.set(DEFAULT_LANGUAGE);
+    this.titleConflict.set(null);
+    this.applySaved({
+      id: this.storage.newId(),
+      title: payload.formTitle || DEFAULT_FORM_TITLE,
+      updatedAt: Date.now(),
+      payload
+    }, 'import');
+  }
+
+  private applySaved(saved: SavedForm, source: string) {
+    const p = saved.payload;
+    this.lastSavedTitle = saved.title ?? p.formTitle ?? DEFAULT_FORM_TITLE;
+    this.sections.set(this.normalizeSections(p.sections ?? []));
+    this.formTitle.set(p.formTitle ?? DEFAULT_FORM_TITLE);
+    this.disableInputSize.set(!!p.disableInputSize);
+    this.disableMouseOver.set(!!p.disableMouseOver);
+    this.deployment.set({ ...emptyDeployment(), ...(p.deployment ?? {}) });
+    this.selectedSectionIndex.set(null);
+    this.selectedComponentIndex.set(null);
+    this.currentFormId.set(saved.id);
+    this.hasSourceSpreadsheet.set(!!saved.hasSource);
+    this.view.set('editor');
+    this.resetHistory();
+    this.telemetry.record('formOpen', source, saved.id);
   }
 
   /**

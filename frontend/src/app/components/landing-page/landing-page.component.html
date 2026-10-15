@@ -12,7 +12,8 @@
     <div class="flex items-center justify-between mb-8">
       <div>
         <h2 class="text-2xl font-semibold text-gray-900">My Forms</h2>
-        <p class="text-sm text-gray-500 mt-1">Forms are saved on the server and visible from any browser.</p>
+        <p *ngIf="canWrite()" class="text-sm text-gray-500 mt-1">Forms are saved on the server and visible from any browser.</p>
+        <p *ngIf="!canWrite()" class="text-sm text-amber-700 mt-1">Demo mode: you can build, preview and export forms, but nothing you do here is saved.</p>
       </div>
       <div class="flex items-center gap-2">
         <input
@@ -94,6 +95,7 @@
             <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">download</mat-icon>
           </button>
           <button
+            *ngIf="canWrite()"
             type="button"
             (click)="deleteForm($event, f.id)"
             class="inline-flex items-center justify-center w-9 h-9 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"

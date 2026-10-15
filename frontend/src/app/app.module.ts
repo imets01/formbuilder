@@ -1,10 +1,11 @@
-import { NgModule } from '@angular/core';
+import { NgModule, inject, provideAppInitializer } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
 
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
+import { AuthService, adminTokenInterceptor } from './services/auth.service';
 
 import { MAT_ICON_DEFAULT_OPTIONS } from '@angular/material/icon';
 
@@ -17,7 +18,8 @@ import { MAT_ICON_DEFAULT_OPTIONS } from '@angular/material/icon';
     AppComponent
   ],
   providers: [
-  provideHttpClient(),
+  provideHttpClient(withInterceptors([adminTokenInterceptor])),
+  provideAppInitializer(() => inject(AuthService).refresh()),
   {
     provide: MAT_ICON_DEFAULT_OPTIONS,
     useValue: { fontSet: 'material-symbols-outlined' }

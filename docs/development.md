@@ -39,6 +39,7 @@ python test_orphan_logic.py                 # show/hide conditions that no longe
 python test_palette_coverage.py             # every palette id is mapped in both layers
 python test_logic_notation.py               # AND/OR reading of a Logik anzeigen cell
 python test_forms_store.py
+python test_demo_mode.py                    # ADMIN_TOKEN locks writes, not reads
 
 cd frontend
 npx ng test --watch=false --browsers=ChromeHeadless
@@ -61,7 +62,21 @@ The frontend suite passes. Two things make it fail intermittently:
 |---|---|---|---|
 | `environment.tour` | `frontend/src/environments/` | `true` | First-run walkthrough |
 
-Backend env vars: `FORMS_DIR`.
+Backend env vars: `FORMS_DIR`, `ADMIN_TOKEN`.
+
+### Demo mode (`ADMIN_TOKEN`)
+
+Set `ADMIN_TOKEN` (for example in the Vercel project's environment variables) to make the
+public site read-only. Saving, deleting and uploading an imported source spreadsheet then need
+the key in an `X-Admin-Token` header; without it the backend answers `403`. Everything else —
+building, preview, generate JSON, import, export — stays open. Visitors without the key edit in
+memory only, with no autosave and no delete button. Imports open in the editor instead of being
+saved.
+
+To unlock a browser, open the site once with `?admin=<the key>`. The key is kept in
+localStorage and removed from the address bar. `?admin=` with no value forgets it.
+`GET /api/auth` reports `{canWrite, demo}`. Leave `ADMIN_TOKEN` unset locally and nothing is
+locked.
 
 ## Docker
 

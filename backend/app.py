@@ -4,6 +4,7 @@ Thin Flask server.
 Endpoints:
     GET  /                  health check
     GET  /api/heartbeat     health check (JSON)
+    GET  /api/auth          whether this request may save/delete forms (demo mode)
     POST /api/generate-json builds and returns the form-structure JSON
     POST /api/import-excel  reads a specification workbook into a form payload
     POST /api/forms/<id>/export-xlsx  writes the workbook back out
@@ -12,8 +13,10 @@ Endpoints:
     GET  /preview           serves a rendered preview by token
 """
 
+import hmac
 import io
 import math
+import os
 import uuid
 from collections import OrderedDict
 
@@ -33,6 +36,32 @@ CORS(app)
 # Preserve insertion order in the JSON output (Flask 3.x API).
 app.json.sort_keys = False
 
+# Demo mode: when ADMIN_TOKEN is set (as on the public Vercel deployment), only requests
+# carrying it in X-Admin-Token may change stored forms. Everyone else can still build,
+# preview, import and export — just not save or delete. Unset (local dev) = no lock.
+_WRITE_ENDPOINTS = {'put_form', 'remove_form', 'upload_form_source'}
+
+
+def _admin_token() -> str:
+    return os.environ.get('ADMIN_TOKEN', '')
+
+
+def _can_write() -> bool:
+    token = _admin_token()
+    if not token:
+        return True
+    sent = request.headers.get('X-Admin-Token', '')
+    return hmac.compare_digest(sent.encode(), token.encode())
+
+
+@app.before_request
+def _require_admin_for_writes():
+    # CORS preflights (OPTIONS) map to the same endpoint but never carry the header.
+    if request.method == 'OPTIONS':
+        return None
+    if request.endpoint in _WRITE_ENDPOINTS and not _can_write():
+        return jsonify(status="error", message="read-only demo: saving is disabled"), 403
+
 
 @app.route('/')
 def home():
@@ -42,6 +71,12 @@ def home():
 @app.route('/api/heartbeat')
 def heartbeat():
     return jsonify(status="success", message="Server is running.")
+
+
+@app.route('/api/auth')
+def auth_status():
+    """Tell the builder whether to autosave and offer delete for this visitor."""
+    return jsonify(canWrite=_can_write(), demo=bool(_admin_token()))
 
 
 @app.route('/api/forms', methods=['GET'])
