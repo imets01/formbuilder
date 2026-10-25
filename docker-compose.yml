@@ -1,0 +1,44 @@
+# Self-hosted FormBuilder: the Angular frontend (nginx) in front of the Flask backend.
+#
+# The frontend is the only service exposed to the reverse proxy / Cloudflare tunnel: it serves
+# the built app and proxies /api and /preview to the backend over the private "internal" network
+# (see frontend/nginx.conf). Point a Cloudflare route at http://formbuilder:80.
+#
+#   ADMIN_TOKEN=... docker compose up -d --build
+#
+# ADMIN_TOKEN turns on demo mode: without the key the public site is read-only (no saving or
+# deleting). Leave it unset and the site is fully writable by anyone — don't do that in public.
+
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      # Demo-mode key. Unset = no lock. Set it in a .env file beside this one or the shell.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      FORMS_DIR: /app/forms
+    volumes:
+      # Saved forms survive redeploys and restarts. Without this they live only in the container.
+      - formbuilder-forms:/app/forms
+    networks:
+      - internal
+
+  formbuilder:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - internal   # reach the backend by service name
+      - web         # reached by the reverse proxy / Cloudflare tunnel
+
+networks:
+  internal:
+    # Private: only the two containers talk over this; nothing is published to the host.
+  web:
+    # The shared reverse-proxy network, created once outside this stack:
+    #   docker network create web
+    external: true
+
+volumes:
+  formbuilder-forms:
