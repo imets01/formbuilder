@@ -5,7 +5,8 @@ Self-checking test for the saved-form store's name uniqueness.
 
 Covers: free names pass through, clashes on case/punctuation/whitespace, the
 " (n)" disambiguation imports rely on, renaming onto a taken name, renaming a
-form to its own name, and that a title at the length cap still terminates.
+form to its own name, that a title at the length cap still terminates, and what
+a spreadsheet re-import keeps of the form it overwrites.
 """
 
 import json
@@ -96,8 +97,88 @@ def _run_long_title():
     print("OK: forms_store long-title disambiguation terminates.")
 
 
+def _run_reimport():
+    """A re-import takes the sheet's content but keeps what the sheet cannot express."""
+    forms_store.save_form({
+        "id": "form_r", "title": "Permit", "updatedAt": 1,
+        "payload": {
+            "formTitle": "Permit",
+            "sections": [{"id": "old", "title": "Old", "components": []}],
+            "disableInputSize": True,
+            "disableMouseOver": False,
+            "deployment": {"compName": "permit", "usrId": "42", "contactEmail": ""},
+        },
+    })
+
+    fresh = {
+        "formTitle": "Permit",
+        "sections": [{"id": "new", "title": "New", "components": []}],
+        "disableInputSize": False,
+        "disableMouseOver": False,
+        "deployment": {"compName": "", "usrId": "", "contactEmail": "a@b.ch"},
+        "skipped": ["Feld — unknown format \"Wurst\""],
+        "issues": [{"code": "format-unknown", "message": "Feld — unknown format \"Wurst\"", "row": 9}],
+    }
+    saved = forms_store.reimport_form("form_r", fresh, fresh["issues"])
+    payload = saved["payload"]
+
+    assert saved["id"] == "form_r", saved["id"]
+    assert payload["sections"][0]["id"] == "new", payload["sections"]
+    # Deployment values someone typed in the builder survive; blanks take the sheet's.
+    assert payload["deployment"]["compName"] == "permit", payload["deployment"]
+    assert payload["deployment"]["usrId"] == "42", payload["deployment"]
+    assert payload["deployment"]["contactEmail"] == "a@b.ch", payload["deployment"]
+    # Builder-only toggles are not in the sheet, so they are not reset by it.
+    assert payload["disableInputSize"] is True, payload["disableInputSize"]
+    # The importer's own bookkeeping keys never reach the stored payload.
+    assert "skipped" not in payload and "issues" not in payload, payload.keys()
+    assert [i["code"] for i in saved["importIssues"]] == ["format-unknown"], saved["importIssues"]
+    assert saved["updatedAt"] > 1, saved["updatedAt"]
+    # Keeping its own name is not a duplicate of itself.
+    assert saved["title"] == "Permit", saved["title"]
+    renamed = forms_store.reimport_form("form_r", dict(fresh, formTitle="Heading on the form"), [])
+    assert renamed["title"] == "Permit" and renamed["payload"]["formTitle"] == "Permit", \
+        "a re-import keeps the form's name, as its dialog promises"
+
+    # A later re-import with no findings clears the ones that were stored.
+    cleared = forms_store.reimport_form("form_r", fresh, [])
+    assert cleared["importIssues"] == [], cleared["importIssues"]
+
+    assert forms_store.reimport_form("form_missing", fresh, []) is None
+
+    print("OK: forms_store re-import keeps builder-owned settings.")
+
+
+def _run_source_name():
+    """The imported spreadsheet's file name is listed and survives later autosaves."""
+    _save("form_s", "Permit")
+    forms_store.set_source_name("form_s", r"C:\Users\x\Downloads\PSPH_Permit_V25.xlsx")
+
+    listed = {s["id"]: s["sourceFileName"] for s in forms_store.list_forms()}
+    assert listed["form_s"] == "PSPH_Permit_V25.xlsx", listed
+
+    # The builder's autosave replaces the stored form wholesale and never sends the name back.
+    _save("form_s", "Permit")
+    assert forms_store.load_form("form_s")["sourceFileName"] == "PSPH_Permit_V25.xlsx"
+
+    # A re-import is from a different sheet, so its name takes over.
+    saved = forms_store.reimport_form(
+        "form_s",
+        {"formTitle": "Permit", "sections": [{"id": "s", "title": "S", "components": []}]},
+        [],
+        source_name="PSPH_Permit_V26.xlsx",
+    )
+    assert saved["sourceFileName"] == "PSPH_Permit_V26.xlsx", saved["sourceFileName"]
+
+    # Forms built in the builder have no source sheet, and list an empty name.
+    _save("form_t", "Hand-built")
+    assert {s["id"]: s["sourceFileName"] for s in forms_store.list_forms()}["form_t"] == ""
+
+    print("OK: forms_store records the imported spreadsheet's file name.")
+
+
 if __name__ == "__main__":
-    for case in (_run, _run_long_title, _run_legacy_duplicates):
+    for case in (_run, _run_long_title, _run_legacy_duplicates, _run_reimport, _run_source_name):
         with tempfile.TemporaryDirectory() as tmp:
             paths.FORMS_DIR = Path(tmp)
             case()

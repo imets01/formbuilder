@@ -9,10 +9,14 @@ and every record carries a uniform set of keys. `build_form_json` returns plain 
 and snapshot builder read the same dicts.
 """
 
+import datetime
 import re
 import unicodedata
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
+
+from field_names import reject_invalid_field_names
+from input_events import format_events
 
 # Map of component id -> ("Format PSPH" / Fachdatentyp, default input_length)
 COMPONENT_TYPE_MAP = {
@@ -20,6 +24,7 @@ COMPONENT_TYPE_MAP = {
     'text-area':     ("Text mehrzeilig", "500"),
     'date':          ("Datum", None),
     'number':        ("Ganzzahl", "10"),
+    'number-dropdown': ("Zahl Dropdown", "999"),
     'email':         ("Email-Adressen", "100"),
     'phone':         ("Telefonnummer", "50"),
     'upload-single': ("Upload Feld einfach", None),
@@ -111,11 +116,17 @@ class FormField:
     hide_logic: Any = None
     font_size: Optional[str] = None
     aligned_infobox: Optional[bool] = None
+    events: Optional[str] = None
+    input_style: Optional[str] = None
+    input_class: Optional[str] = None
     hidden_by_show_logic: bool = False
 
     def as_record(self) -> dict:
         record = asdict(self)
         record.pop('hidden_by_show_logic', None)
+        for key in ('events', 'input_style', 'input_class'):
+            if record[key] is None:
+                del record[key]
         return record
 
 
@@ -186,9 +197,8 @@ def safe_form_name(title: str) -> str:
     """
     Technical form name derived from the free-text title.
 
-    The name is the base of every exported file, and an identifier downstream,
-    *and* is pasted into the files as an identifier (`<#macro X_form>`,
-    `Constquery{X}E`, `FrameWorkValidrX`). So it has to survive as both: ASCII,
+    The name is the base of every exported file, and an identifier downstream that is
+    pasted into generated sources. So it has to survive as both: ASCII,
     no spaces or punctuation, and short enough not to blow the path limit.
     """
     for src, dst in _TRANSLITERATIONS.items():
@@ -202,11 +212,55 @@ def safe_form_name(title: str) -> str:
     return name or 'actualForm'
 
 
+def safe_version(version: str) -> str:
+    """A version number as it may appear in a file name. Dots are kept — "2.1.1" is the
+    point of it — everything else a file name shouldn't carry becomes an underscore."""
+    return re.sub(r'[^A-Za-z0-9.]+', '_', str(version or '')).strip('._')
+
+
+def output_base_name(deployment: dict) -> str:
+    """The technical form name chosen in the Developer settings, or '' if none is.
+
+    The form title is a poor base for the generated artifacts: the platform names a form by a
+    short code (AbcQz356 -> queryAbcQz356_de.sql), not by a sentence. `baseName` overrides
+    it for everything the pipeline emits, while the spec .xlsx keeps its title-based name.
+
+    A leading "query" is dropped, because the pipeline adds that prefix itself — so typing
+    either the code (AbcQz356) or the file name as it should appear (queryAbcQz356) lands
+    on the same artifacts.
+
+    Mirrored by `outputBaseName` in frontend/src/app/services/form-name.ts — keep in sync.
+    """
+    base = str(deployment.get('baseName') or '').strip()
+    if not base:
+        return ''
+    name = safe_form_name(base)
+    return re.sub(r'^query_*', '', name, flags=re.IGNORECASE) or name
+
+
+def export_file_name(title: str, version: str = '', when: datetime.date | None = None) -> str:
+    """`<YYMMDD>_<form name>_<version>`, without extension.
+
+    Successive exports of one form differ only by date and version, so both go in the
+    name: in a downloads folder the plain form name would just collect " (1)", " (2)"
+    suffixes from the browser and lose which spec is which.
+
+    Mirrored by `exportFileName` in frontend/src/app/services/form-name.ts, which names the
+    download the browser writes — keep the two in sync.
+    """
+    stamp = (when or datetime.date.today()).strftime('%y%m%d')
+    parts = [stamp, safe_form_name(title), safe_version(version)]
+    return '_'.join(p for p in parts if p)
+
+
 def build_form_json(payload: dict) -> dict:
     """Turn the raw formbuilder payload (as sent by the frontend) into the final form-structure JSON."""
+    reject_invalid_field_names(payload)
     sections = payload.get('sections', [])
     form_title = (payload.get('formTitle') or 'actualForm').strip() or 'actualForm'
-    form_name = safe_form_name(form_title)
+    dep = payload.get('deployment') or {}
+    # Every generated file (and the identifiers pasted inside them) is named from this.
+    form_name = output_base_name(dep) or safe_form_name(form_title)
     disable_input_size = bool(payload.get('disableInputSize', False))
     disable_mouse_over = bool(payload.get('disableMouseOver', False))
 
@@ -592,6 +646,10 @@ def build_form_json(payload: dict) -> dict:
                 hide_logic=comp.get('hideLogic') or sec_hide,
                 font_size=comp.get('fontSize') if is_text_block else None,
                 aligned_infobox=True if (is_text_block and comp.get('alignedInfobox')) else None,
+                # onChange: builder files saved before events were generic.
+                events=format_events(comp.get('events') or comp.get('onChange')) or None,
+                input_style=(comp.get('inputStyle') or '').strip() or None,
+                input_class=(comp.get('inputClass') or '').strip() or None,
             )
 
         if is_aggregate:
@@ -622,8 +680,6 @@ def build_form_json(payload: dict) -> dict:
         section_key: {key: entry.as_record() for key, entry in section_entries.items()}
         for section_key, section_entries in parts.items()
     }
-
-    dep = payload.get('deployment') or {}
 
     def _dep(field, default):
         return (str(dep.get(field) or '')).strip() or default

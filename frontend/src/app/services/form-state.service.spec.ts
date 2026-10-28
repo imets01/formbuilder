@@ -54,6 +54,51 @@ describe('FormStateService autosave', () => {
     http.verify();
   });
 
+  it('saves a brand-new form, which the server has not seen yet', async () => {
+    form.newForm();
+    flushFormList();
+
+    const saves = await settleSaves();
+
+    expect(saves.length).toBe(1);
+    saves[0].flush({ id: saves[0].request.body.id, title: saves[0].request.body.title });
+    http.verify();
+  });
+
+  it('does not save, or bump Last edited, when a form is only opened', async () => {
+    form.openForm('form_opened');
+    http.expectOne(r => r.method === 'GET' && r.url.endsWith('/form_opened')).flush({
+      id: 'form_opened', title: 'Permit', updatedAt: 1,
+      payload: { formTitle: 'Permit', sections: [{ id: 'S1', title: 'Section', sourceRef: 'S1', components: [] }] },
+    });
+    flushFormList();
+
+    expect((await settleSaves()).length).withContext('opening is not editing').toBe(0);
+
+    const saves = await editAndSettle('Permit renamed');
+    expect(saves.length).withContext('a real edit still saves').toBe(1);
+    saves[0].flush({});
+    http.verify();
+  });
+
+  it('saveNow sends an edit still waiting out the debounce, and nothing otherwise', async () => {
+    await startForm();
+    form.formTitle.set('Typed just before logout');
+    TestBed.tick();
+
+    const sending = form.saveNow();
+    const now = http.match(r => r.method === 'PUT');
+    expect(now.length).withContext('sent at once, not after the debounce').toBe(1);
+    expect(now[0].request.body.payload.formTitle).toBe('Typed just before logout');
+    now[0].flush({});
+    await sending;
+
+    await form.saveNow();
+    expect(http.match(r => r.method === 'PUT').length).withContext('nothing pending now').toBe(0);
+    (await settleSaves()).forEach(r => r.flush({}));  // the debounced copy still lands
+    http.verify();
+  });
+
   it('keeps saving after a request fails', async () => {
     await startForm();
 
@@ -133,6 +178,38 @@ describe('FormStateService autosave', () => {
 });
 
 /** Imported PSPH sheets carry DE/FR/IT and often no EN, so an EN canvas would read as empty. */
+describe('FormStateService event migration', () => {
+  it('turns a saved bare onChange handler into an onchange event', () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const form = TestBed.inject(FormStateService);
+    const http = TestBed.inject(HttpTestingController);
+    const field = (fieldName: string, extra: object) =>
+      ({ id: 'text-input', instanceId: fieldName, fieldName, ...extra });
+
+    form.openForm('form_old');
+    http.expectOne(r => r.url.endsWith('/form_old')).flush({
+      id: 'form_old', title: 'Old', updatedAt: 1,
+      payload: { formTitle: 'Old', sections: [{ id: 'S1', title: 'S', sourceRef: 'S1', components: [
+        field('F_Old', { onChange: 'vLicenceCheck(this);' }),
+        field('F_Quote', { onChange: 'say("hi")' }),
+        field('F_New', { events: 'onblur="trim(this)"', onChange: 'ignored(this)' }),
+      ] }, { id: 'S2', title: '', sheetRow: 7, components: [] }, { id: 'S3', title: 'Neu', components: [] }] },
+    });
+    expect(form.sections()[1].sourceRef)
+      .withContext('found by its sheet row; an invented name would duplicate the header')
+      .toBeUndefined();
+    expect(form.sections()[2].sourceRef).withContext('sections from scratch still get one').toBeTruthy();
+
+    expect(form.sections()[0].sourceRef).toBe('S1');
+    const events = form.sections()[0].components.map(c => [c.events, c.onChange]);
+    expect(events).toEqual([
+      ['onchange="vLicenceCheck(this);"', undefined],
+      [`onchange='say("hi")'`, undefined],
+      ['onblur="trim(this)"', undefined],
+    ]);
+  });
+});
+
 describe('FormStateService display language', () => {
   let form: FormStateService;
 

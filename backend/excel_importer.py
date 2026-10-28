@@ -29,6 +29,9 @@ import io
 import re
 from typing import Any, Optional
 
+from field_names import ALLOWED_DESCRIPTION, is_valid_field_name
+from input_events import format_events
+
 
 # ── The 7 form-header metadata fields, in builder order (mirrors the frontend). ──
 METADATA_FIELDS = [
@@ -49,6 +52,7 @@ _PALETTE = {
     'phone': ('Phone', 'phone'),
     'date': ('Date', 'calendar_today'),
     'number': ('Number', 'numbers'),
+    'number-dropdown': ('Number Dropdown', 'pin'),
     'radio': ('Radio Button', 'radio_button_checked'),
     'checkbox': ('Checkbox Group', 'check_box'),
     'select-single': ('Dropdown', 'arrow_drop_down_circle'),
@@ -67,6 +71,10 @@ _SINGLE_FORMATS = {
     'textmehrzeilig': 'text-area',
     'ganzzahl': 'number',
     'float': 'number',
+    'festkommazahl': 'number',
+    # Exact names only: a plain "Drop Down Field Titel" stays an option dropdown.
+    'zahldropdown': 'number-dropdown',
+    'numberdropdown': 'number-dropdown',
     'telefonnummer': 'phone',
     'datum': 'date',
     'uploadfeldeinfach': 'upload-single',
@@ -76,6 +84,9 @@ _SINGLE_FORMATS = {
     'infotext': 'text',
     'kontrollkasten': 'single-checkbox',
 }
+
+# The _SINGLE_FORMATS entries that import as a number accepting decimals.
+_FLOAT_FORMATS = {'float', 'festkommazahl'}
 _SPLIT_PAIRS = [
     (('name',),    ('vorname',),                              'name-vorname'),
     (('strasse',), ('nr', 'nummer', 'hausnr', 'hausnummer'), 'strasse-nr'),
@@ -121,10 +132,20 @@ _METADATA_FORMATS = {
     'departement': 'meta-department',
     'bundesamt': 'meta-federalOffice',
     'sektionbundesamt': 'meta-section',
+    'sektion': 'meta-section',
     'adressebundesamt': 'meta-address',
     'plzundortdesbundesamtes': 'meta-zipCity',
     'plzundortdesbundesamt': 'meta-zipCity',
 }
+
+# (column key, builder property, header the exporter writes). Passed straight through to the
+# platform-side row macro, which only the single text-like inputs are rendered by.
+DEVELOPER_ATTRS: tuple[tuple[str, str, str], ...] = (
+    ('events', 'events', 'Event (JS)'),
+    ('input_style', 'inputStyle', 'Inline-Style (CSS)'),
+    ('input_class', 'inputClass', 'CSS-Klasse'),
+)
+DEVELOPER_ATTR_COMPONENTS = frozenset({'text-input', 'text-area', 'number', 'date', 'email', 'phone'})
 
 # Canonical column key -> ASCII-folded header substrings that identify it.
 _COLUMN_MATCHERS = {
@@ -154,6 +175,10 @@ _COLUMN_MATCHERS = {
     'disable_mouse_over': ['mouseovernichtanzeigen'],
     'weblink': ['weblink'],
     'control': ['bemerkungsteuerung'],
+    # 'onchange': sheets exported before events were generic call the column "onChange (JS)".
+    'events': ['eventjs', 'onchange'],
+    'input_style': ['inlinestyle'],
+    'input_class': ['cssklasse', 'cssclass'],
 }
 
 
@@ -165,6 +190,10 @@ def _fold(value: Any) -> str:
 
 
 _LOGIC_TOKEN = re.compile(r'\d+(?:\.\d+)?|[\[\]]')
+
+# These columns double as a notes column, and prose like "IF(30.06<Actual Date<=31.12)"
+# was mined for Input IDs, inventing hide conditions on whatever rows shared those numbers.
+_LOGIC_NOTATION = re.compile(r'^[0-9.,\[\]\s]+$')
 
 
 def _flatten_or_group(node: list) -> list[str]:
@@ -188,8 +217,11 @@ def _parse_logic_cell(raw: str) -> tuple[list, bool]:
 
     Returns (terms, well_formed), where each term is an Input ID token (an AND entry) or a
     list of them (an OR group). A cell with no brackets at all is read as the top level,
-    so a bare "5" and a bare "5, 8" mean 5, and 5 and 8 respectively.
+    so a bare "5" and a bare "5, 8" mean 5, and 5 and 8 respectively. A cell that is not
+    _LOGIC_NOTATION returns no terms, so the caller reports it unreadable.
     """
+    if (raw or '').strip() and not _LOGIC_NOTATION.match(raw.strip()):
+        return [], True
     stack: list[list] = [[]]
     well_formed = True
     for tok in _LOGIC_TOKEN.findall(raw or ''):
@@ -261,11 +293,15 @@ def _decode_csv(raw: bytes) -> str:
     return raw.decode('cp1252', 'replace')
 
 
-def _read_rows(raw: bytes, filename: str) -> list[list[str]]:
-    """Return the spreadsheet (the form sheet) as a list of string rows."""
+def _read_rows(raw: bytes, filename: str) -> tuple[list[list[str]], str]:
+    """Return the form sheet as string rows, plus the sheet's name.
+
+    Rows start at spreadsheet row 1, so a row's index + 1 is the number the user sees
+    in Excel — that is what makes an import issue findable in the source workbook.
+    """
     if filename.lower().endswith('.csv'):
         text = _decode_csv(raw)
-        return [[(c or '') for c in row] for row in csv.reader(io.StringIO(text))]
+        return [[(c or '') for c in row] for row in csv.reader(io.StringIO(text))], ''
 
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
@@ -273,8 +309,13 @@ def _read_rows(raw: bytes, filename: str) -> list[list[str]]:
     # a Version sheet, catalogs…). Several carry a "Format PSPH" column, so pick the
     # one with the most actual form rows rather than the first match.
     def sheet_rows(ws):
-        return [['' if c is None else str(c) for c in row]
+        ws.reset_dimensions()
+        rows = [['' if c is None else str(c) for c in row]
                 for row in ws.iter_rows(values_only=True)]
+        width = max((len(row) for row in rows), default=0)
+        for row in rows:
+            row.extend([''] * (width - len(row)))
+        return rows
 
     def form_score(rows):
         header = next((r for r in rows[:6] if any('formatpsph' in _fold(c) for c in r)), None)
@@ -287,8 +328,8 @@ def _read_rows(raw: bytes, filename: str) -> list[list[str]]:
         return sum(1 for r in rows
                    if fmt_idx < len(r) and _classify(r[fmt_idx])[0] in kinds)
 
-    best = max((sheet_rows(ws) for ws in wb.worksheets),
-               key=form_score, default=[])
+    best = max(((sheet_rows(ws), ws.title) for ws in wb.worksheets),
+               key=lambda pair: form_score(pair[0]), default=([], ''))
     wb.close()
     return best
 
@@ -323,7 +364,7 @@ def _classify(fmt: str):
         return ('metadata', _METADATA_FORMATS[f])
     if 'emailoftheform' in f or 'emailbundesamt' in f:
         return ('email-of-form',)
-    if f in ('header', 'textheader'):
+    if f in ('header', 'textheader', 'sektion'):
         return ('header',)
     if 'keinfeld' in f and 'formularsprache' not in f:
         return ('internal',)  # "kein Feld (interne Daten)" — backend-only, not shown
@@ -349,14 +390,19 @@ def _classify(fmt: str):
     if 'emailadresse' in f:
         return ('component', 'email', False)
     if f in _SINGLE_FORMATS:
-        return ('component', _SINGLE_FORMATS[f], f == 'float')
+        return ('component', _SINGLE_FORMATS[f], f in _FLOAT_FORMATS)
     return ('unknown', fmt)
 
 
 class _Importer:
-    def __init__(self, rows: list[list[str]]):
+    def __init__(self, rows: list[list[str]], sheet_name: str = ''):
         self.rows = rows
+        self.sheet_name = sheet_name
         self.skipped: list[str] = []
+        # The same findings as `skipped`, but machine-readable: a stable code plus the
+        # anchors (sheet row, label, Fachdatenbezeichner) the builder needs to decide
+        # whether a finding has since been fixed by hand. See _issue.
+        self.issues: list[dict] = []
         self.metadata: dict[str, dict[str, str]] = {}
         self.metadata_links: dict[str, str] = {}
         self.contact_email = ''
@@ -366,6 +412,8 @@ class _Importer:
         self.group_silent = False           # eat the group's option rows (fixed lists)
         self.aggregate: Optional[dict] = None  # open repeatable block, until "Aggregate end"
         self._n = 0
+        self._row_no = 0  # 1-based spreadsheet row currently being read
+        self._aggregate_row = 0
         self._optid_by_input_id: dict[str, str] = {}
         # (target dict, show terms, hide terms, source, mark-hidden) per row carrying logic,
         # resolved only once every option has been seen — see _resolve_pending_logic.
@@ -373,10 +421,53 @@ class _Importer:
         # (normalised Input ID token, source label) for every show/hide reference seen,
         # checked against the complete option map at the end of the pass.
         self._logic_refs: list[tuple[str, str]] = []
+        self._unreadable_logic: list[tuple[str, str, dict]] = []
+        # Input ID -> (PSPH format, German label), to explain an unresolved reference.
+        self._row_by_input_id: dict[str, tuple[str, str]] = {}
+        self._dev_attr_row: dict[str, int] = {}
 
     def _uid(self, prefix: str) -> str:
         self._n += 1
         return f'{prefix}_{self._n}'
+
+    def _issue(self, code: str, message: str, *, row: Optional[int] = None,
+               label: str = '', field_name: str = '', input_id: str = '',
+               target: Optional[dict] = None, skipped: bool = True) -> None:
+        """Record one import finding, both as free text and as a structured issue.
+
+        `code` is the stable identifier the builder maps to a resolution strategy;
+        `label`/`field_name`/`target` are the anchors it matches against the canvas to
+        decide whether the finding has since been fixed by hand. `skipped=False` keeps a
+        finding about a row that *was* imported out of the skipped-rows list.
+        """
+        if skipped:
+            self.skipped.append(message)
+        issue: dict[str, Any] = {
+            'code': code,
+            'message': message,
+            'row': self._row_no if row is None else row,
+            'sheet': self.sheet_name,
+        }
+        if label:
+            issue['label'] = label
+        if field_name:
+            issue['fieldName'] = field_name
+        if input_id:
+            issue['inputId'] = input_id
+        if target:
+            issue['target'] = target
+        self.issues.append(issue)
+
+    def _anchor(self, row, cols, kind: str) -> dict:
+        """Where a row's content ended up in the builder, so an issue can be re-checked."""
+        anchor: dict[str, Any] = {'kind': kind, 'row': self._row_no}
+        label = self._get(row, cols, 'label_de')
+        field_name = self._get(row, cols, 'field_name')
+        if label:
+            anchor['label'] = label
+        if field_name:
+            anchor['fieldName'] = field_name
+        return anchor
 
     @staticmethod
     def _norm_input_id(token: str) -> str:
@@ -388,7 +479,7 @@ class _Importer:
             return token
 
     def _defer_logic(self, target: dict, row, cols, source: str, *,
-                     mark_hidden: bool = False) -> None:
+                     mark_hidden: bool = False, target_kind: str = 'field') -> None:
         """Parse this row's show/hide cells now; resolve their references later.
 
         Only the parse happens here, so a malformed cell is reported in document order.
@@ -396,24 +487,26 @@ class _Importer:
         says a resolved Show/Hide condition implies the row starts hidden — true for
         fields, false for a section, whose heading carries that itself.
         """
+        anchor = self._anchor(row, cols, target_kind)
         parsed_cells = []
         for key in ('show_logic', 'hide_logic'):
             raw = self._get(row, cols, key)
             terms, well_formed = _parse_logic_cell(raw)
             if raw.strip() and not terms:
-                self.skipped.append(
-                    f'{source} — show/hide condition "{raw.strip()}" names no Input ID; '
-                    f'the condition was dropped')
+                self._unreadable_logic.append((raw.strip(), source, anchor))
             elif terms and not well_formed:
-                self.skipped.append(
+                self._issue(
+                    'logic-unbalanced',
                     f'{source} — show/hide condition "{raw.strip()}" has unbalanced '
-                    f'brackets; the groups were read as best they could be, so check it')
+                    f'brackets; the groups were read as best they could be, so check it',
+                    label=anchor.get('label', ''), field_name=anchor.get('fieldName', ''),
+                    target=anchor)
             parsed_cells.append(terms)
         if parsed_cells[0] or parsed_cells[1]:
             self._pending_logic.append(
-                (target, parsed_cells[0], parsed_cells[1], source, mark_hidden))
+                (target, parsed_cells[0], parsed_cells[1], source, mark_hidden, anchor))
 
-    def _terms_to_conditions(self, terms: list, source: str):
+    def _terms_to_conditions(self, terms: list, source: str, anchor: Optional[dict] = None):
         """Map parsed Input ID terms onto builder LogicCondition[] — an AND of entries.
 
         Every token is recorded (with `source` naming the field or section it belongs to)
@@ -426,7 +519,7 @@ class _Importer:
             for tok in tokens:
                 norm = self._norm_input_id(tok)
                 if source:
-                    self._logic_refs.append((norm, source))
+                    self._logic_refs.append((norm, source, anchor))
                 oid = self._optid_by_input_id.get(norm)
                 if oid and oid not in oids:
                     oids.append(oid)
@@ -447,9 +540,9 @@ class _Importer:
         Runs before _merge_split_inputs, which copies the resolved values into the merged
         component.
         """
-        for target, show_terms, hide_terms, source, mark_hidden in self._pending_logic:
-            show = self._terms_to_conditions(show_terms, source)
-            hide = self._terms_to_conditions(hide_terms, source)
+        for target, show_terms, hide_terms, source, mark_hidden, anchor in self._pending_logic:
+            show = self._terms_to_conditions(show_terms, source, anchor)
+            hide = self._terms_to_conditions(hide_terms, source, anchor)
             if show:
                 target['showLogic'] = show
             if hide:
@@ -464,18 +557,43 @@ class _Importer:
         cols = _match_columns(header)
         if 'format' not in cols:
             raise ValueError("Not a PSPH form sheet: no 'Format PSPH' column found.")
+        self._has_input_id_column = 'input_id' in cols
 
         start = self.rows.index(header) + 1
-        for row in self.rows[start:]:
+        for offset, row in enumerate(self.rows[start:]):
+            self._row_no = start + offset + 1  # 1-based, as Excel numbers it
+            input_id = self._norm_input_id(self._get(row, cols, 'input_id'))
+            if input_id:
+                self._row_by_input_id[input_id] = (
+                    self._get(row, cols, 'format'), self._get(row, cols, 'label_de'))
             self._row(row, cols)
+            self._check_field_name(row, cols)
         if self.aggregate is not None:
-            self.skipped.append(
+            self._issue(
+                'aggregate-unclosed',
                 f'{self.aggregate["title"]} — aggregate has no "Aggregate end" row; every '
-                f'field after its start was imported into the block')
+                f'field after its start was imported into the block',
+                row=self._aggregate_row, label=self.aggregate['title'],
+                field_name=self.aggregate.get('aggregateFachdatenbezeichner', ''))
         self._resolve_pending_logic()
         self._merge_split_inputs()
+        self._report_unreadable_logic()
         self._report_unresolved_logic()
+        self._report_unreachable_fields()
+        self._report_unnamed_fields()
+        self._drop_empty_unnamed()
         return self._payload()
+
+    def _check_field_name(self, row, cols) -> None:
+        field_name = self._get(row, cols, 'field_name')
+        if is_valid_field_name(field_name):
+            return
+        label = self._get(row, cols, 'label_de')
+        self._issue(
+            'field-name-invalid',
+            f'{label or field_name} — Fachdatenbezeichner "{field_name}" may only contain '
+            f'{ALLOWED_DESCRIPTION}; rename it before generating',
+            label=label, field_name=field_name)
 
     def _find_header(self) -> list[str]:
         for row in self.rows:
@@ -494,14 +612,118 @@ class _Importer:
         resolved during the pass stay silent; only genuinely dangling [Input ID]
         tokens (typo'd, or pointing at a row that wasn't imported) are reported.
         """
+        if self._logic_refs and not self._row_by_input_id:
+            self._report_logic_without_input_ids()
+            return
         seen: set[tuple[str, str]] = set()
-        for tok, source in self._logic_refs:
+        for tok, source, anchor in self._logic_refs:
             if tok in self._optid_by_input_id or (tok, source) in seen:
                 continue
             seen.add((tok, source))
-            self.skipped.append(
-                f'{source} — show/hide condition references [{tok}], which matches no '
-                f'option; the condition was dropped')
+            anchor = anchor or {}
+            self._issue(
+                'logic-dangling-ref',
+                f'{source} — show/hide condition references [{tok}], '
+                f'{self._describe_ref(tok)}. That term was dropped; the rest of the '
+                f'condition was kept',
+                row=anchor.get('row', 0), label=anchor.get('label', ''),
+                field_name=anchor.get('fieldName', ''), input_id=tok,
+                target=anchor or None)
+
+    def _report_logic_without_input_ids(self) -> None:
+        """Conditions point at options by Input ID; a sheet without any has nothing for them
+        to point at. One finding naming that cause, rather than one per reference."""
+        fields = list(dict.fromkeys(source for _, source, _ in self._logic_refs))
+        examples = ', '.join(fields[:3]) + (f' and {len(fields) - 3} more' if len(fields) > 3 else '')
+        cause = ('has no "Input ID" column' if not self._has_input_id_column
+                 else 'leaves its "Input ID" column empty')
+        self._issue(
+            'logic-without-input-ids',
+            f'This sheet {cause}, but {len(fields)} field(s) have show/hide conditions '
+            f'({examples}). Conditions refer to options by Input ID, so they were dropped and '
+            f'those fields always show. Add the Input IDs to the sheet and re-import, or set '
+            f'the conditions in the builder',
+            row=0, skipped=False)
+
+    def _report_unreadable_logic(self) -> None:
+        """Each distinct cell once with a row count: one repeated note is one finding."""
+        grouped: dict[str, list[tuple[str, dict]]] = {}
+        for raw, source, anchor in self._unreadable_logic:
+            grouped.setdefault(raw, []).append((source, anchor or {}))
+        for raw, hits in grouped.items():
+            source, anchor = hits[0]
+            others = len(hits) - 1
+            also = f' (and {others} more row{"s" if others > 1 else ""})' if others else ''
+            self._issue(
+                'logic-unreadable',
+                f'{source}{also} — show/hide condition "{raw}" is not an Input ID list '
+                f'(expected e.g. "[5]" or "[5, [8, 11]]"); it was ignored rather than '
+                f'guessed at, so the row keeps no condition from it',
+                row=anchor.get('row', 0), label=anchor.get('label', ''),
+                field_name=anchor.get('fieldName', ''), target=anchor or None)
+
+    def _drop_empty_unnamed(self) -> None:
+        self.sections = [s for s in self.sections
+                         if s['components'] or s.get('title') or s.get('sourceRef')
+                         or s.get('isAggregate')]
+
+    def _report_unnamed_fields(self) -> None:
+        """Generate needs a Fachdatenbezeichner for every field (the builder's
+        missingFieldNames). One summary, not one per row: a sheet that leaves the column empty
+        leaves it empty everywhere."""
+        unnamed = []
+        for section in self.sections:
+            for comp in section['components']:
+                if comp['id'] in ('text', 'electronic-consent'):
+                    continue  # display text, and a consent the platform names itself
+                sides = [(comp.get('splitConfig') or {}).get(s) or {} for s in ('a', 'b')]
+                names = ([side.get('fieldName') for side in sides] if comp['id'] == 'split-input'
+                         else [comp.get('fieldName')])
+                if not all(names):
+                    unnamed.append(self._title_de(comp) or comp.get('content') or comp['id'])
+        if not unnamed:
+            return
+        examples = ', '.join(f'"{label}"' for label in unnamed[:3])
+        more = f' and {len(unnamed) - 3} more' if len(unnamed) > 3 else ''
+        self._issue(
+            'field-names-missing',
+            f'{len(unnamed)} field(s) have no Fachdatenbezeichner ({examples}{more}) — fill them in '
+            f'before generating; each name is written into its row of the spreadsheet on export',
+            row=0, skipped=False)
+
+    def _report_unreachable_fields(self) -> None:
+        """A field left "Verstecktes Feld = ja" with every term of its show condition
+        unusable keeps the hidden flag with nothing to reveal it, so it can never appear.
+        """
+        for target, show_terms, _hide_terms, source, _mark, anchor in self._pending_logic:
+            if not show_terms or target.get('showLogic') or not target.get('hiddenField'):
+                continue
+            anchor = anchor or {}
+            self._issue(
+                'logic-hidden-unreachable',
+                f'{source} — hidden by default, and every term of its show condition was '
+                f'unusable, so nothing is left to reveal it; as imported it cannot appear '
+                f'in the form',
+                row=anchor.get('row', 0), label=anchor.get('label', ''),
+                field_name=anchor.get('fieldName', ''), target=anchor or None)
+
+    def _describe_ref(self, tok: str) -> str:
+        """Why a reference failed: usually the Input ID is real but is not an option row,
+        and a condition can only key on an option.
+        """
+        row = self._row_by_input_id.get(tok)
+        if row is None:
+            return 'which no row in this sheet carries'
+        fmt, label = row
+        kind = _classify(fmt)[0] if fmt else ''
+        named = f' ("{label[:40]}")' if label else ''
+        if kind == 'title':
+            return (f'the "{fmt}" group title{named} — reference the Input ID of the '
+                    f'option to be chosen, not the question')
+        if kind in ('component', 'metadata', 'header', 'unknown'):
+            return (f'a "{fmt}" row{named}, not an option — only option rows '
+                    f'(Radiobutton/Auswahlfeld/Checkbox Option) can be referenced')
+        return f'a "{fmt}" row{named} that was not imported as an option'
 
     def _langs(self, row, cols, prefix) -> dict[str, str]:
         de = self._get(row, cols, f'{prefix}_de')
@@ -533,6 +755,13 @@ class _Importer:
         """
         return bool(self._get(row, cols, 'label_de'))
 
+    def _is_unnamed_section(self, row, cols) -> bool:
+        """A header with no label in any language: a section left without a name. Acta-Nova
+        blocks carry their text in "Name AN deutsch" instead, and stay skipped. A blank header
+        that turns out to hold only Acta-Nova rows is dropped again (_drop_empty_unnamed)."""
+        labels = ('label_de', 'label_fr', 'label_it', 'label_en', 'name_an_de')
+        return not any(self._get(row, cols, key) for key in labels)
+
     def _row(self, row, cols):
         kind = _classify(self._get(row, cols, 'format'))
         tag = kind[0]
@@ -540,8 +769,11 @@ class _Importer:
         if tag in ('blank', 'internal'):
             if tag == 'blank' and self._has_label(row, cols):
                 label = self._get(row, cols, 'label_de') or '(row)'
-                self.skipped.append(
-                    f'{label} — empty "Format PSPH" cell; row skipped (set a format so it can be imported)')
+                self._issue(
+                    'format-missing',
+                    f'{label} — empty "Format PSPH" cell; row skipped (set a format so it can be imported)',
+                    label=self._get(row, cols, 'label_de'),
+                    field_name=self._get(row, cols, 'field_name'))
             return
         if tag == 'metadata':
             keep_link = kind[1] == 'meta-description'
@@ -558,7 +790,7 @@ class _Importer:
                 self.contact_email = email
             return
         if tag == 'header':
-            if not self._has_de_label(row, cols):
+            if not self._has_de_label(row, cols) and not self._is_unnamed_section(row, cols):
                 # No "Feld in PSPH deutsch" → Acta-Nova-managed block (An-/Cc-Empfänger,
                 # Versandbestätigung …). Not a PSPH section; skip it.
                 self.group, self.group_silent = None, False
@@ -597,23 +829,29 @@ class _Importer:
             return
         if tag == 'defer':
             label = self._get(row, cols, 'label_de') or self._get(row, cols, 'format')
-            self.skipped.append(f'{label or "(row)"} — {kind[1]}')
+            self._issue('format-deferred', f'{label or "(row)"} — {kind[1]}',
+                        label=self._get(row, cols, 'label_de'),
+                        field_name=self._get(row, cols, 'field_name'))
             self.group, self.group_silent = None, True  # eat any option rows that follow
             return
         # unknown
         if self._has_label(row, cols):
-            self.skipped.append(f'{self._get(row, cols, "label_de") or "(row)"} — unknown format "{kind[1]}"')
+            self._issue(
+                'format-unknown',
+                f'{self._get(row, cols, "label_de") or "(row)"} — unknown format "{kind[1]}"',
+                label=self._get(row, cols, 'label_de'),
+                field_name=self._get(row, cols, 'field_name'))
 
     def _ensure_section(self):
         if self.current is None:
-            self.current = {'id': self._uid('Section'), 'title': 'Section', 'components': []}
+            self.current = {'id': self._uid('Section'), 'title': '', 'components': [], 'headerless': True}
             self.sections.append(self.current)
 
     def _start_section(self, row, cols):
         clean, _weblink = self._clean_langs_and_weblink(row, cols, 'label', keep_link=False)
         self.current = {
             'id': self._uid('Section'),
-            'title': clean['DE'] or clean['FR'] or clean['IT'] or clean['EN'] or 'Section',
+            'title': clean['DE'] or clean['FR'] or clean['IT'] or clean['EN'],
             'translations': {'title': clean},
             'components': [],
         }
@@ -622,23 +860,30 @@ class _Importer:
         source_ref = self._get(row, cols, 'field_name')
         if source_ref:
             self.current['sourceRef'] = source_ref
+        else:
+            # No Fachdatenbezeichner to find this header by again; the export uses its row.
+            self.current['sheetRow'] = self._row_no
         ref_id = self._get(row, cols, 'ref_id')
         if ref_id:
             self.current['refID'] = ref_id
         comp_id = self._get(row, cols, 'comp_id')
         if comp_id:
             self.current['compId'] = comp_id
-        ctx = f'section "{self.current["title"]}"'
-        self._defer_logic(self.current, row, cols, ctx)
+        if _as_bool(self._get(row, cols, 'hidden')):
+            self.current['hiddenField'] = True
+        ctx = f'section "{self.current["title"] or source_ref}"'
+        self._defer_logic(self.current, row, cols, ctx, target_kind='section')
         self.sections.append(self.current)
         self.group, self.group_silent = None, False
 
     def _start_aggregate(self, row, cols):
         """Open an isAggregate section; rows up to "Aggregate end" become its components."""
         if self.aggregate is not None:  # PSPH sheets don't nest aggregates
-            self.skipped.append(
+            self._issue(
+                'aggregate-autoclosed',
                 f'{self.aggregate["title"]} — aggregate not closed before the next '
-                f'"Aggregate start"; it was closed automatically')
+                f'"Aggregate start"; it was closed automatically',
+                row=self._aggregate_row, label=self.aggregate['title'])
             self._end_aggregate(row, cols)
         clean, _weblink = self._clean_langs_and_weblink(row, cols, 'label', keep_link=False)
         section: dict[str, Any] = {
@@ -661,19 +906,24 @@ class _Importer:
             section['aggregateCompId'] = comp_id
         self.sections.append(section)
         self.current = self.aggregate = section
+        self._aggregate_row = self._row_no
         self.group, self.group_silent = None, False
 
     def _add_aggregate_group(self, row, cols):
         """Record a "Group N" row; the builder only counts them."""
         if self.aggregate is None:
-            self.skipped.append(
-                f'{self._get(row, cols, "format") or "(row)"} — "Group" row outside an aggregate')
+            self._issue(
+                'group-outside-aggregate',
+                f'{self._get(row, cols, "format") or "(row)"} — "Group" row outside an aggregate',
+                label=self._get(row, cols, 'label_de'),
+                field_name=self._get(row, cols, 'field_name'))
             return
         self.aggregate['groups'].append({'groupId': self._uid('gr'), 'refID': ''})
 
     def _end_aggregate(self, row, cols):
         if self.aggregate is None:
-            self.skipped.append(
+            self._issue(
+                'aggregate-end-orphan',
                 f'{self._get(row, cols, "format") or "(row)"} — "Aggregate end" with no matching start')
             return
         self.aggregate = None
@@ -684,7 +934,12 @@ class _Importer:
         if self.group_silent:
             return  # electronic consent: its Yes/No options are rebuilt by the frontend
         if self.group is None:
-            self.skipped.append(f'{self._get(row, cols, "label_de") or "(option)"} — option with no group')
+            self._issue(
+                'option-without-group',
+                f'{self._get(row, cols, "label_de") or "(option)"} — option with no group',
+                label=self._get(row, cols, 'label_de'),
+                field_name=self._get(row, cols, 'field_name'),
+                input_id=self._norm_input_id(self._get(row, cols, 'input_id')))
             return
         option_id = self._uid('opt')
         input_id = self._norm_input_id(self._get(row, cols, 'input_id'))
@@ -715,8 +970,23 @@ class _Importer:
             val = self._get(row, cols, key)
             if val:
                 comp[prop] = val
+        if not comp.get('fieldName'):
+            comp['sheetRow'] = self._row_no
         if link_from_labels and not comp.get('weblink'):
             comp['weblink'] = link_from_labels
+        dev_attrs = {prop: val for key, prop, _ in DEVELOPER_ATTRS
+                     if (val := self._get(row, cols, key))}
+        if 'events' in dev_attrs:
+            dev_attrs['events'] = format_events(dev_attrs['events'])
+        if dev_attrs and comp_id in DEVELOPER_ATTR_COMPONENTS:
+            comp.update(dev_attrs)
+            self._dev_attr_row[comp['instanceId']] = self._row_no
+        elif dev_attrs:
+            self._issue(
+                'developer-attrs-ignored',
+                f'"{labels["DE"] or name}" — Event / Inline-Style / CSS-Klasse only apply to '
+                f'text, number, date, e-mail and phone fields; ignored here',
+                label=labels['DE'], field_name=self._get(row, cols, 'field_name'))
         if self._get(row, cols, 'hidden') and _as_bool(self._get(row, cols, 'hidden')):
             comp['hiddenField'] = True
         ctx = f'"{labels["DE"] or name}"'
@@ -778,6 +1048,18 @@ class _Importer:
                 return variant
         return None
 
+    def _report_dropped_dev_attrs(self, c1: dict, c2: dict, variant: str) -> None:
+        for comp in (c1, c2):
+            if not any(comp.get(prop) for _, prop, _ in DEVELOPER_ATTRS):
+                continue
+            label = self._title_de(comp)
+            self._issue(
+                'developer-attrs-ignored',
+                f'"{label}" — merged into one {variant} input, which takes no Event / '
+                f'Inline-Style / CSS-Klasse; ignored here',
+                row=self._dev_attr_row.get(comp['instanceId'], 0),
+                label=label, field_name=comp.get('fieldName', ''))
+
     def _make_split(self, c1: dict, c2: dict, variant: str) -> dict:
         """Combine two adjacent single-row text fields into one split-input component."""
         name, icon = _SPLIT_PALETTE[variant]
@@ -790,6 +1072,8 @@ class _Importer:
                 'fieldName': c.get('fieldName', '') or '',
                 'refID': c.get('refID', '') or '',
             }
+            if c.get('sheetRow'):
+                cfg['sheetRow'] = c['sheetRow']
             for prop in ('mouseOverDe', 'mouseOverFr', 'mouseOverIt'):
                 if c.get(prop):
                     cfg[prop] = c[prop]
@@ -833,6 +1117,7 @@ class _Importer:
                 if c2 is not None and c1.get('id') == 'text-input' and c2.get('id') == 'text-input':
                     variant = self._split_variant_for(self._title_de(c1), self._title_de(c2))
                 if variant:
+                    self._report_dropped_dev_attrs(c1, c2, variant)
                     merged.append(self._make_split(c1, c2, variant))
                     i += 2
                 else:
@@ -860,11 +1145,8 @@ class _Importer:
         sections.extend(self.sections)
 
         title_de = (self.metadata.get('meta-title') or {}).get('DE', '')
-        deployment = {
-            'compName': '', 'usrId': '', 'contactEmail': self.contact_email,
-            'deId': '', 'frId': '', 'itId': '', 'enId': '',
-            'wikiLink': '', 'issueLink': '', 'validatorClass': '',
-        }
+        deployment = {key: '' for key, _ in DEPLOYMENT_FIELDS if key != 'formName'}
+        deployment['contactEmail'] = self.contact_email
         return {
             'formTitle': title_de or 'Imported form',
             'disableInputSize': False,
@@ -872,14 +1154,114 @@ class _Importer:
             'deployment': deployment,
             'sections': sections,
             'skipped': self.skipped,
+            'issues': self.issues,
         }
+
+
+# ── Deployment tab ──────────────────────────────────────────────────
+# The ids a package is deployed with (user ids, the per-language form ids, the validator
+# class…) have no column in the PSPH form sheet — they are filled in in the builder. The
+# exporter therefore creates them on their own tab, and a later fresh import of that workbook
+# reads them back from here, so nobody has to type them a second time.
+
+DEPLOYMENT_SHEET = 'Deployment'
+
+DEPLOYMENT_FIELDS: tuple[tuple[str, str], ...] = (
+    # The form's name in My Forms; not a deployment setting, but nowhere else in the sheet
+    # keeps it (Formulartitel is the heading on the form, and often differs).
+    ('formName', 'Formularname (Builder)'),
+    ('baseName', 'Dateibasis (query...)'),
+    ('compName', 'Komponentenname'),
+    ('usrId', 'User ID (prod)'),
+    ('usrIdDev', 'User ID (dev)'),
+    ('contactEmail', 'Kontakt E-Mail'),
+    ('deId', 'Formular-ID DE'),
+    ('frId', 'Formular-ID FR'),
+    ('itId', 'Formular-ID IT'),
+    ('enId', 'Formular-ID EN'),
+    ('wikiLink', 'Wiki-Seite'),
+    ('issueLink', 'GitLab Issue-Nr.'),
+    ('validatorClass', 'Validator-Klasse'),
+)
+
+DEPLOYMENT_HEADERS = ('Feld', 'Beschreibung', 'Wert')
+
+_VALUE_HEADERS = ('wert', 'value')
+
+
+def deployment_key(text: Any) -> Optional[str]:
+    """The deployment field a tab row names, matched on the key or its label; None if neither."""
+    folded = _fold(text)
+    if not folded:
+        return None
+    for key, label in DEPLOYMENT_FIELDS:
+        if folded in (_fold(key), _fold(label)):
+            return key
+    return None
+
+
+def deployment_value_column(rows: list[list[str]]) -> int:
+    """0-based value column of a deployment tab, from its header row (default: the third)."""
+    for cells in rows:
+        if deployment_key(cells[0] if cells else ''):
+            continue
+        for i, cell in enumerate(cells):
+            if _fold(cell) in _VALUE_HEADERS:
+                return i
+    return 2
+
+
+def read_deployment_sheet(raw: bytes, filename: str) -> dict[str, str]:
+    """Deployment values stored on the workbook's deployment tab; {} when there is none.
+
+    Only non-empty values are returned, so a half-filled tab leaves the rest alone.
+    """
+    if filename.lower().endswith('.csv'):
+        return {}  # a single-sheet format has nowhere to carry the tab
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception:
+        return {}
+    try:
+        ws = next((s for s in wb.worksheets
+                   if _fold(s.title) == _fold(DEPLOYMENT_SHEET)), None)
+        if ws is None:
+            return {}
+        ws.reset_dimensions()  # same stale-<dimension> trap as _read_rows
+        rows = [['' if c is None else str(c).strip() for c in row]
+                for row in ws.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+    value_col = deployment_value_column(rows)
+    found: dict[str, str] = {}
+    for cells in rows:
+        key = deployment_key(cells[0] if cells else '')
+        if key and value_col < len(cells) and cells[value_col]:
+            found[key] = cells[value_col]
+    return found
 
 
 def import_spreadsheet(raw: bytes, filename: str) -> dict:
     """Parse a PSPH .xlsx/.csv into a builder payload.
 
-    Returns the {sections, formTitle, deployment, ...} payload plus a `skipped`
-    list naming rows/formats not yet reconstructed (Phase 1).
+    Returns the {sections, formTitle, deployment, ...} payload plus `skipped`
+    (human-readable lines) and `issues` — the same findings, coded and anchored to
+    their sheet row so the builder can track which ones are still outstanding.
+
+    Deployment ids come from the workbook's deployment tab when it has one, filling only
+    what the form sheet itself cannot say — the contact e-mail stays the form sheet's,
+    since that is where PSPH keeps it.
     """
-    rows = _read_rows(raw, filename)
-    return _Importer(rows).run()
+    rows, sheet_name = _read_rows(raw, filename)
+    payload = _Importer(rows, sheet_name).run()
+    deployment = payload.get('deployment') or {}
+    stored = read_deployment_sheet(raw, filename)
+    if stored.get('formName'):
+        payload['formTitle'] = stored.pop('formName')
+    for key, value in stored.items():
+        if not (deployment.get(key) or '').strip():
+            deployment[key] = value
+    payload['deployment'] = deployment
+    return payload

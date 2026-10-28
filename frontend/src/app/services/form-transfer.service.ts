@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { FormStorageService, SavedForm, SavedFormPayload } from './form-storage.service';
+import { ImportIssue, annotateAmbiguity } from './import-issues';
 import { environment } from '../../environments/environment';
 import { safeFormName } from './form-name';
 
@@ -76,10 +77,10 @@ export class FormTransferService {
 
   /**
    * Upload a legacy PSPH .xlsx/.csv and convert it to a builder payload on the
-   * server. Returns the payload plus a list of rows the importer couldn't yet
-   * reconstruct (Phase 1), so the caller can surface them.
+   * server. Returns the payload plus the rows the importer couldn't reconstruct,
+   * coded and anchored to their sheet row so the builder can keep track of them.
    */
-  async importExcelFile(file: File): Promise<{ payload: SavedFormPayload; skipped: string[] }> {
+  async importExcelFile(file: File): Promise<{ payload: SavedFormPayload; issues: ImportIssue[] }> {
     const body = new FormData();
     body.append('file', file);
     const res = await fetch(`${environment.apiUrl}/api/import-excel`, { method: 'POST', body });
@@ -98,7 +99,31 @@ export class FormTransferService {
       disableMouseOver: !!p.disableMouseOver,
       ...(p.deployment ? { deployment: p.deployment } : {})
     };
-    return { payload, skipped: Array.isArray(p.skipped) ? p.skipped : [] };
+    return { payload, issues: Array.isArray(p.issues) ? p.issues : [] };
+  }
+
+  /**
+   * Re-import a corrected spreadsheet over an existing form, server-side.
+   *
+   * The form keeps its id, so this is the alternative to delete-and-import-again:
+   * links, the stored spec workbook and the deployment settings all stay put. The
+   * saved form that comes back is the new truth for the canvas.
+   */
+  async reimportExcelFile(formId: string, file: File): Promise<SavedForm> {
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch(
+      `${environment.apiUrl}/api/forms/${encodeURIComponent(formId)}/reimport`,
+      { method: 'POST', body }
+    );
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.status === 'error') {
+      throw new Error(data?.message || 'Could not re-import this spreadsheet.');
+    }
+    if (!data.payload || !Array.isArray(data.payload.sections)) {
+      throw new Error('The re-imported spreadsheet produced no fields.');
+    }
+    return data as SavedForm;
   }
 
   /**
@@ -120,13 +145,15 @@ export class FormTransferService {
     }
   }
 
-  /** Save a parsed payload as a brand-new form on the server. */
-  importAsNewForm(payload: SavedFormPayload): Observable<SavedForm> {
+  /** Save a parsed payload as a brand-new form on the server, with its import record. */
+  importAsNewForm(payload: SavedFormPayload, issues: ImportIssue[] = []): Observable<SavedForm> {
     const form: SavedForm = {
       id: this.storage.newId(),
       title: payload.formTitle || 'Imported Form',
       updatedAt: Date.now(),
-      payload
+      payload,
+      // Judged against the import's own output, while nothing has been edited yet.
+      importIssues: annotateAmbiguity(issues, payload.sections)
     };
     return this.storage.save(form);
   }

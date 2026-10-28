@@ -16,6 +16,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 import paths
@@ -64,6 +65,7 @@ def list_forms() -> list[dict]:
             "id": form.get("id", path.stem),
             "title": form.get("title", DEFAULT_TITLE),
             "updatedAt": form.get("updatedAt", 0),
+            "sourceFileName": form.get("sourceFileName") or "",
         })
     summaries.sort(key=lambda s: s["updatedAt"], reverse=True)
     return summaries
@@ -124,6 +126,11 @@ def _trim_for_suffix(base: str) -> str:
     return base or DEFAULT_TITLE
 
 
+# Import provenance belongs to the server: the builder's autosave replaces the stored
+# form wholesale and has no reason to know about these, so carry them across a save.
+_SERVER_OWNED_KEYS = ("sourceFileName", "importedAt")
+
+
 def save_form(form: dict) -> dict:
     """Write the form to <id>.json atomically and return it.
     """
@@ -136,6 +143,9 @@ def save_form(form: dict) -> dict:
         clash = find_by_title(title, exclude_id=form_id)
         if clash is not None:
             raise DuplicateFormTitle(title, clash)
+    for key in _SERVER_OWNED_KEYS:
+        if key not in form and stored and stored.get(key) is not None:
+            form[key] = stored[key]
     data = json.dumps(form, ensure_ascii=False, indent=2)
     # Write to a temp file in the same dir, then atomically replace the target.
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_", suffix=".json")
@@ -204,3 +214,86 @@ def load_source(form_id: str) -> bytes | None:
 def has_source(form_id: str) -> bool:
     """Whether an imported-source spreadsheet is stored for this form."""
     return _source_path(form_id).exists()
+
+
+def clean_source_name(name: str | None) -> str:
+    """The bare file name of an upload — some browsers send a whole path."""
+    return os.path.basename((name or "").replace("\\", "/")).strip()
+
+
+def set_source_name(form_id: str, name: str | None) -> None:
+    """Record which spreadsheet a saved form was imported from, for the form list."""
+    cleaned = clean_source_name(name)
+    stored = load_form(form_id)
+    if stored is None or not cleaned or stored.get("sourceFileName") == cleaned:
+        return
+    stored["sourceFileName"] = cleaned
+    save_form(stored)
+
+
+# ── Re-import (overwrite a saved form from a fresh spreadsheet) ───────────────
+# Re-importing replaces the form's content with the sheet's, but a few things the
+# builder owns and the sheet cannot express have to survive it: the deployment
+# settings filled in under "Developer", and the two form-wide display toggles.
+
+_BUILDER_OWNED_TOGGLES = ("disableInputSize", "disableMouseOver")
+
+
+def merge_reimport(
+    stored: dict,
+    payload: dict,
+    issues: list[dict] | None = None,
+    source_name: str | None = None,
+) -> dict:
+    """Return `stored` with a freshly imported `payload` laid over it.
+
+    Content (sections) comes from the sheet; the form keeps its name. Deployment values already filled in
+    are kept and only blanks are taken from the sheet, so a re-import never wipes the
+    deployment ids someone typed in the builder.
+    """
+    old_payload = stored.get("payload") or {}
+    new_payload = {k: v for k, v in payload.items() if k not in ("skipped", "issues")}
+
+    deployment = dict(new_payload.get("deployment") or {})
+    for key, value in (old_payload.get("deployment") or {}).items():
+        if value not in (None, ""):
+            deployment[key] = value
+    if deployment:
+        new_payload["deployment"] = deployment
+
+    for key in _BUILDER_OWNED_TOGGLES:
+        if key in old_payload:
+            new_payload[key] = old_payload[key]
+
+    # The re-import dialogs promise the form keeps its name; the sheet's is only a fallback.
+    title = (stored.get("title") or "").strip() or (new_payload.get("formTitle") or "").strip() \
+        or DEFAULT_TITLE
+    title = unique_title(title, exclude_id=stored.get("id"))
+    new_payload["formTitle"] = title
+
+    now = int(time.time() * 1000)
+    merged = dict(stored)
+    merged.update({
+        "title": title,
+        "payload": new_payload,
+        "importIssues": issues or [],
+        "importedAt": now,
+        "updatedAt": now,
+    })
+    cleaned = clean_source_name(source_name)
+    if cleaned:
+        merged["sourceFileName"] = cleaned
+    return merged
+
+
+def reimport_form(
+    form_id: str,
+    payload: dict,
+    issues: list[dict] | None = None,
+    source_name: str | None = None,
+) -> dict | None:
+    """Overwrite a saved form from a freshly imported payload. None if it doesn't exist."""
+    stored = load_form(form_id)
+    if stored is None:
+        return None
+    return save_form(merge_reimport(stored, payload, issues, source_name))

@@ -28,6 +28,22 @@ generated Java validator types a block's enumeration to one component's class**,
 repeating block in any other component does not compile. See `_AGGREGATE_FIELD_NUMBER = 999`,
 possibly the cause of the second golden diff below.
 
+## Import issues
+
+The outstanding count is a heuristic, not a link back to the spreadsheet. A skipped row has
+no `instanceId` in the document — it was never imported — so "has the user fixed this?" is
+answered by matching the row's label or `Fachdatenbezeichner` against the canvas. Therefore:
+
+- **A field added under a different name does not clear its issue.** It has to be ticked off
+  by hand.
+- **Renaming an unrelated field onto the skipped row's label clears it.** The `ambiguous`
+  flag only covers names that collided *at import time*, not ones introduced later.
+- Dropped conditions are checked only for *presence* of show/hide logic on the target, never
+  for it being the right condition.
+
+A real fix carries the sheet's Input ID into the document (the same missing link as the
+export overlay above), which would let an issue point at a row rather than a name.
+
 ## Runtime
 
 - **Previews are kept in memory.** 20 most recent, per process, lost on restart — and with

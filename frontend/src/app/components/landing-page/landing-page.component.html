@@ -27,6 +27,12 @@
           accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
           class="hidden"
           (change)="onImportExcelSelected($event)" />
+        <input
+          #reimportInput
+          type="file"
+          accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+          class="hidden"
+          (change)="onReimportFileSelected($event)" />
         <div class="relative">
           <button
             type="button"
@@ -82,9 +88,25 @@
         class="flex items-center justify-between px-5 py-4 hover:bg-gray-50 cursor-pointer transition-colors">
         <div class="min-w-0">
           <p class="text-sm font-medium text-gray-900 truncate">{{ f.title || 'Untitled Form' }}</p>
-          <p class="text-xs text-gray-500 mt-0.5">Last edited {{ formatDate(f.updatedAt) }}</p>
+          <p class="flex items-center gap-1.5 min-w-0 text-xs text-gray-500 mt-0.5">
+            <ng-container *ngIf="f.sourceFileName">
+              <mat-icon class="!w-[14px] !h-[14px] !text-[14px] shrink-0 text-gray-400">table_view</mat-icon>
+              <span class="truncate text-gray-600" [title]="f.sourceFileName">{{ f.sourceFileName }}</span>
+              <span class="shrink-0 text-gray-300">·</span>
+            </ng-container>
+            <span class="shrink-0">Last edited {{ formatDate(f.updatedAt) }}</span>
+          </p>
         </div>
         <div class="ml-4 flex items-center gap-1">
+          <button
+            type="button"
+            (click)="startReimport($event, f); reimportInput.click()"
+            [disabled]="importing()"
+            class="inline-flex items-center justify-center w-9 h-9 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-40 transition-colors"
+            aria-label="Re-import spreadsheet"
+            title="Re-import a corrected spreadsheet over this form">
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">sync</mat-icon>
+          </button>
           <button
             type="button"
             (click)="exportForm($event, f.id)"

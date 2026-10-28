@@ -1,0 +1,149 @@
+<div class="relative" *ngIf="total() > 0">
+  <button
+    type="button"
+    (click)="toggle()"
+    [attr.aria-expanded]="open()"
+    [title]="outstanding().length
+      ? outstanding().length + ' import issue(s) still open — click to review'
+      : 'All ' + total() + ' import issue(s) dealt with — click to review'"
+    class="inline-flex items-center gap-1.5 h-10 px-2.5 rounded-md border text-sm font-semibold transition-colors"
+    [ngClass]="outstanding().length
+      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+      : 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100'">
+    <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">
+      {{ outstanding().length ? 'warning' : 'check_circle' }}
+    </mat-icon>
+    {{ outstanding().length || total() }}
+  </button>
+
+  <!-- Click-away layer, so the panel behaves like the menus around it. -->
+  <div *ngIf="open()" class="fixed inset-0 z-40" (click)="open.set(false)"></div>
+
+  <!-- Spans the page the way the old import banner did: these messages quote spreadsheet
+       labels and conditions, which wrap badly in a narrow dropdown. -->
+  <div
+    *ngIf="open()"
+    class="fixed left-6 right-6 top-[4.5rem] z-50 bg-[#fffdf5] border border-amber-200 rounded-lg shadow-2xl">
+    <div class="px-5 py-3 border-b border-amber-100 flex items-start gap-3">
+      <mat-icon class="!w-5 !h-5 !text-[20px] text-amber-600 mt-0.5 flex-shrink-0">warning</mat-icon>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-gray-900">Spreadsheet import issues</p>
+        <p class="text-xs text-gray-600 mt-0.5">
+          {{ outstanding().length }} of {{ total() }} still open.
+          Rows the importer could not reconstruct from the source workbook.
+        </p>
+      </div>
+      <button type="button" (click)="open.set(false)"
+              title="Close" class="p-1 rounded hover:bg-amber-50 text-amber-600 flex-shrink-0">
+        <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">close</mat-icon>
+      </button>
+    </div>
+
+    <div class="max-h-[60vh] overflow-auto">
+      <p *ngIf="!outstanding().length" class="px-5 py-4 text-sm text-gray-600">
+        Nothing outstanding — every issue from this import has been fixed or checked off.
+      </p>
+
+      <ul class="divide-y divide-amber-100">
+        <li *ngFor="let issue of outstanding(); trackBy: trackIssue" class="px-5 py-3">
+          <div class="flex items-start gap-3">
+            <mat-icon class="!w-[18px] !h-[18px] !text-[18px] text-amber-500 mt-0.5 flex-shrink-0">
+              warning
+            </mat-icon>
+            <div class="min-w-0 flex-1">
+              <p class="text-sm text-gray-800 break-words">{{ issue.message }}</p>
+              <p class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-400">
+                <span *ngIf="issue.row" class="font-mono">
+                  row {{ issue.row }}{{ issue.sheet ? ' · ' + issue.sheet : '' }}
+                </span>
+                <span *ngIf="issue.fieldName" class="font-mono">{{ issue.fieldName }}</span>
+                <span class="font-mono">{{ issue.code }}</span>
+                <span class="text-gray-500">{{ advice(issue) }}</span>
+              </p>
+            </div>
+            <div class="flex items-center gap-3 flex-shrink-0 pt-0.5">
+              <button
+                type="button"
+                *ngIf="canReveal(issue)"
+                (click)="reveal(issue)"
+                class="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline">
+                <mat-icon class="!w-[16px] !h-[16px] !text-[16px]">my_location</mat-icon>
+                Show in builder
+              </button>
+              <button
+                type="button"
+                (click)="markFixed(issue, true)"
+                class="inline-flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-green-700 hover:underline">
+                <mat-icon class="!w-[16px] !h-[16px] !text-[16px]">check</mat-icon>
+                {{ needsManualCheck(issue) ? 'Mark as checked' : 'Dismiss' }}
+              </button>
+            </div>
+          </div>
+        </li>
+      </ul>
+
+      <div *ngIf="settled().length" class="border-t border-amber-100">
+        <button
+          type="button"
+          (click)="toggleSettled()"
+          class="w-full flex items-center justify-between px-5 py-2 text-xs font-medium text-gray-500 hover:bg-amber-50">
+          <span>{{ settled().length }} already dealt with</span>
+          <mat-icon class="!w-[18px] !h-[18px] !text-[18px] transition-transform"
+                    [class.rotate-180]="showSettled()">expand_more</mat-icon>
+        </button>
+        <ul *ngIf="showSettled()" class="divide-y divide-amber-100 bg-amber-50/70">
+          <li *ngFor="let issue of settled(); trackBy: trackIssue" class="px-5 py-2.5">
+            <div class="flex items-start gap-3">
+              <mat-icon class="!w-[16px] !h-[16px] !text-[16px] text-green-600 mt-0.5 flex-shrink-0">
+                check_circle
+              </mat-icon>
+              <div class="min-w-0 flex-1">
+                <p class="text-xs text-gray-500 line-through break-words">{{ issue.message }}</p>
+                <p *ngIf="!issue.fixedAt" class="mt-0.5 text-[11px] text-green-700">
+                  Fixed in the builder.
+                </p>
+              </div>
+              <button
+                type="button"
+                *ngIf="issue.fixedAt"
+                (click)="markFixed(issue, false)"
+                class="text-xs font-medium text-gray-500 hover:text-amber-800 hover:underline flex-shrink-0">
+                Reopen
+              </button>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="px-5 py-3 border-t border-amber-100 bg-amber-50 rounded-b-lg
+                flex items-center justify-between gap-4">
+      <p class="text-xs text-gray-600 leading-snug">
+        Fixed it in the spreadsheet instead? Re-import the corrected workbook over this form —
+        it keeps its name and deployment settings, and the list is rebuilt from the new sheet.
+      </p>
+      <input
+        #reimportInput
+        type="file"
+        accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        class="hidden"
+        (change)="onReimportFileSelected($event)" />
+      <div class="flex items-center gap-3 flex-shrink-0">
+        <button
+          type="button"
+          (click)="clearAll()"
+          class="text-xs font-medium text-gray-500 hover:text-red-600 hover:underline">
+          Clear list
+        </button>
+        <button
+          type="button"
+          (click)="reimportInput.click()"
+          [disabled]="reimporting()"
+          class="inline-flex items-center gap-2 h-9 px-3 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-60 transition-colors">
+          <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">sync</mat-icon>
+          {{ reimporting() ? 'Re-importing…' : 'Re-import spreadsheet' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

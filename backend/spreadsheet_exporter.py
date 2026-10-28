@@ -12,6 +12,10 @@ regenerate a faithful workbook from the builder alone. Instead we keep the
     Input IDs repeat) and only the cells the builder owns (labels, placeholders,
     mouseovers, Mussfeld) are rewritten, and only when they actually changed, so
     untouched rows/columns/formatting pass through verbatim;
+  - rows for fields deleted in the builder are removed, and the rows the builder owns are
+    put in the builder's order (see `_drop_deleted_rows` / `_reorder_rows`). "Owned" means
+    the importer turns the row into builder content; everything else (Acta-Nova rows,
+    metadata) is never removed;
   - fields added in the builder are inserted at their correct line — right after
     the spreadsheet row of the nearest preceding field that already exists (its
     section header counts), so an added field lands in its section rather than at
@@ -21,7 +25,10 @@ regenerate a faithful workbook from the builder alone. Instead we keep the
     anzeigen / Logik ausblenden columns, but only when the builder actually has
     logic for the row and the cell changed (see `_apply_logic`);
   - the "Version" sheet records the change + author (a re-used version number updates its
-    existing row rather than duplicating it).
+    existing row rather than duplicating it);
+  - the "Deployment" sheet carries the deployment ids the form sheet has no column for, so
+    importing the workbook afresh elsewhere needs no manual re-entry (see
+    `_write_deployment_sheet`).
 
 Other structural columns (Fachdatentyp, Befüllung, DFS, …) are left untouched, so
 importing → exporting unchanged yields the same form sheet plus only the new
@@ -38,7 +45,14 @@ from typing import Any, Optional
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
-from excel_importer import _fold, _match_columns, _strip_html, _split_link, _classify
+from copy import copy
+
+from input_events import format_events
+from excel_importer import (_fold, _match_columns, _strip_html, _split_link, _classify,
+                            import_spreadsheet,
+                            DEVELOPER_ATTR_COMPONENTS, DEVELOPER_ATTRS,
+                            DEPLOYMENT_FIELDS, DEPLOYMENT_HEADERS, DEPLOYMENT_SHEET,
+                            deployment_key, deployment_value_column)
 
 
 # Builder component id -> Format PSPH text, for rows *added* in the builder.
@@ -49,6 +63,7 @@ _FORMAT_FOR = {
     'date': 'Datum',
     'email': 'E-Mail-Adresse',
     'number': 'Ganzzahl',
+    'number-dropdown': 'Zahl Dropdown',
     'upload-single': 'Upload Feld einfach',
     'upload-multi': 'Upload Feld mehrfach',
     'radio': 'Radio Button Titel',
@@ -95,13 +110,26 @@ _STD_HEADERS = [
     'Format PSPH, Formate gem. TF 00', 'Fachdatenbezeichner', 'RefID', 'Complimentary ID',
     'Fachdatentyp', 'Dateiformate', 'Befüllung', 'DFS', 'Registerkarte', 'Fragen/Bemerkungen',
     'Mouseover nicht anzeigen', 'Weblinks',
+    *(title for _, _, title in DEVELOPER_ATTRS),
 ]
 
 
 def export_spreadsheet(source: Optional[bytes], payload: dict, *,
                        author: str = '', note: str = '',
                        version: str = '', bump: bool = True) -> bytes:
-    """Return PSPH .xlsx bytes for the form.
+    """Return PSPH .xlsx bytes for the form; see export_spreadsheet_versioned."""
+    data, _ = export_spreadsheet_versioned(
+        source, payload, author=author, note=note, version=version, bump=bump)
+    return data
+
+
+def export_spreadsheet_versioned(source: Optional[bytes], payload: dict, *,
+                                 author: str = '', note: str = '',
+                                 version: str = '', bump: bool = True) -> tuple[bytes, str]:
+    """Return PSPH .xlsx bytes for the form, plus the version the workbook now carries.
+
+    The version is worth having back: left blank it is bumped from the sheet's own history,
+    so only the export itself knows which one was recorded.
 
     With a stored `source` workbook: overlay the builder's edits onto it (faithful round-trip).
     Without one (a form built from scratch): generate a fresh PSPH workbook from the payload.
@@ -120,17 +148,18 @@ def export_spreadsheet(source: Optional[bytes], payload: dict, *,
             wb = _workbook_from_csv(source)
         form_ws = _pick_form_sheet(wb)
         if form_ws is not None:
-            _overlay_form_sheet(form_ws, payload)
+            _overlay_form_sheet(form_ws, payload, *_builder_owned(source))
     else:
         wb = _generate_workbook(payload)
+    _write_deployment_sheet(wb, payload)
     if bump:
-        _append_version_row(wb, author=author, note=note, version=version)
+        recorded = _append_version_row(wb, author=author, note=note, version=version)
     else:
-        _ensure_baseline_version(wb)
+        recorded = _ensure_baseline_version(wb)
     _strip_query_tables(wb)  # avoid Excel's "Removed Part: External data range" repair on open
     out = io.BytesIO()
     wb.save(out)
-    return out.getvalue()
+    return out.getvalue(), recorded
 
 
 def _strip_query_tables(wb) -> None:
@@ -266,6 +295,7 @@ def _spec_for_component(comp: dict) -> Optional[dict]:
     spec: dict[str, Any] = {
         'format': fmt,
         'field_name': (comp.get('fieldName') or '').strip(),
+        'sheet_row': comp.get('sheetRow'),
         'label': _titles(comp, base_field),
         'ph': _titles(comp, 'placeholder'),
         'mo': {'DE': comp.get('mouseOverDe', ''), 'FR': comp.get('mouseOverFr', ''),
@@ -277,15 +307,23 @@ def _spec_for_component(comp: dict) -> Optional[dict]:
         'weblink': comp.get('weblink', ''),
         'comments': comp.get('commentsForDevs', ''),
         'disable_mo': bool(comp.get('disableMouseOver')),
+        'hidden': _hidden_by_default(comp),
         'show': show, 'hide': hide,
         'children': [],
     }
+    if cid in DEVELOPER_ATTR_COMPONENTS:
+        spec['dev'] = {key: comp.get(prop) or '' for key, prop, _ in DEVELOPER_ATTRS}
+        # onChange: builder files saved before events were generic.
+        spec['dev']['events'] = format_events(comp.get('events') or comp.get('onChange'))
     if cid == 'number' and comp.get('allowDecimals'):
         spec['format'] = 'Float'
+    if cid == 'number-dropdown' and comp.get('maxLength'):
+        spec['size'] = str(comp['maxLength'])
     if cid == 'split-input':
         cfg = comp.get('splitConfig') or {}
         return {'split': [
             {'format': 'Text einzeilig', 'field_name': (cfg.get(side, {}).get('fieldName') or '').strip(),
+             'sheet_row': cfg.get(side, {}).get('sheetRow'),
              'label': cfg.get(side, {}).get('titles') or {},
              'ph': cfg.get(side, {}).get('placeholders') or {},
              'mo': {'DE': cfg.get(side, {}).get('mouseOverDe', ''),
@@ -295,6 +333,7 @@ def _spec_for_component(comp: dict) -> Optional[dict]:
              'ref_id': (cfg.get(side, {}).get('refID') or comp.get('refID', '') or ''),
              'comp_id': '',
              **({'comments': comp.get('commentsForDevs', '')} if side == 'a' else {}),
+             'hidden': _hidden_by_default(comp),
              'show': show, 'hide': hide}
             for side in ('a', 'b')
         ]}
@@ -359,7 +398,9 @@ def _flatten_payload(payload: dict) -> tuple[dict, dict, list, dict]:
         # Keep the header in document order so it can anchor a new first-field-in-section,
         # and match its existing row when ref is known.
         add({'label': _titles(sec), 'field_name': ref, 'format': 'Header',
+             'sheet_row': sec.get('sheetRow'),
              'ph': {}, 'mo': {}, 'required': False, 'ref_id': '', 'comp_id': '', 'header': True,
+             'hidden': _hidden_by_default(sec),
              'show': sec.get('showLogic'), 'hide': sec.get('hideLogic')})
         for comp in sec.get('components') or []:
             spec = _spec_for_component(comp)
@@ -420,6 +461,31 @@ def _apply_email(ws: Worksheet, r: int, cols: dict, email: str) -> None:
     _write_if_changed(ws, r, ci, email)
 
 
+def _hidden_by_default(target: dict) -> Optional[bool]:
+    """The Verstecktes Feld value to write, or None to leave the cell alone.
+
+    The importer marks every field that carries a show/hide condition as hidden, so for those
+    the flag says nothing the condition doesn't; writing it would stamp "Ja" onto rows whose
+    author never set it.
+    """
+    if target.get('showLogic') or target.get('hideLogic'):
+        return None
+    return bool(target.get('hiddenField'))
+
+
+def _write_flag(ws: Worksheet, r: int, col_idx: Optional[int], value: Optional[bool]) -> None:
+    """Set a Ja/blank column, leaving the cell untouched when its truth value already matches."""
+    if col_idx is None or value is None:
+        return
+    cell = ws.cell(row=r, column=col_idx + 1)
+    if _as_flag(cell.value) != value:
+        cell.value = 'Ja' if value else None
+
+
+def _as_flag(value) -> bool:
+    return _fold(_cell_text(value)) in ('ja', 'yes', 'true', 'x', '1')
+
+
 def _apply_overlay(ws: Worksheet, r: int, cols: dict, spec: dict) -> None:
     label, ph, mo = spec.get('label') or {}, spec.get('ph') or {}, spec.get('mo') or {}
     link = spec.get('weblink') or ''
@@ -434,14 +500,15 @@ def _apply_overlay(ws: Worksheet, r: int, cols: dict, spec: dict) -> None:
     _write_if_changed(ws, r, cols.get('mo_it'), mo.get('IT', ''))
     if spec.get('comments') is not None:
         _write_if_changed(ws, r, cols.get('comments'), spec['comments'])
+    for key, value in (spec.get('dev') or {}).items():
+        _write_if_changed(ws, r, cols.get(key), value)
+    if spec.get('size'):
+        _write_if_changed(ws, r, cols.get('size'), spec['size'])
+    _write_flag(ws, r, cols.get('hidden'), spec.get('hidden'))
     # Mussfeld: only flip when the boolean actually changes, so "--"/blank N/A markers
     # are left alone unless the user genuinely made the field required.
-    req_idx = cols.get('required')
-    if req_idx is not None and spec.get('required') is not None:
-        cell = ws.cell(row=r, column=req_idx + 1)
-        existing_bool = _fold(_cell_text(cell.value)) in ('ja', 'yes', 'true', 'x', '1')
-        if bool(spec['required']) != existing_bool:
-            cell.value = 'Ja' if spec['required'] else None
+    required = spec.get('required')
+    _write_flag(ws, r, cols.get('required'), None if required is None else bool(required))
 
 
 def _norm_input_id(token: str) -> str:
@@ -501,13 +568,28 @@ def _apply_logic(ws: Worksheet, r: int, cols: dict, spec: dict, optid_to_inputid
             cell.value = desired
 
 
-def _overlay_form_sheet(ws: Worksheet, payload: dict) -> None:
+def _builder_owned(source: bytes) -> tuple[set[str], set[int]]:
+    """What the importer turns into builder content for this workbook: the rows it finds by
+    Fachdatenbezeichner, and the rows without one, by number."""
+    for filename in ('source.xlsx', 'source.csv'):
+        try:
+            imported = import_spreadsheet(source, filename)
+        except Exception:
+            continue
+        by_fieldname, _, ordered, _ = _flatten_payload(imported)
+        return set(by_fieldname), {s['sheet_row'] for s in ordered if s.get('sheet_row')}
+    return set(), set()
+
+
+def _overlay_form_sheet(ws: Worksheet, payload: dict, owned: set[str] = frozenset(),
+                        owned_rows: set[int] = frozenset()) -> None:
     header_row = _find_header_row(ws)
     if header_row is None:
         return
     cols = _match_columns(_row_values(ws, header_row))
     fmt_idx, fn_idx, iid_idx = cols.get('format'), cols.get('field_name'), cols.get('input_id')
     by_fieldname, by_meta, ordered, optid_to_fieldname = _flatten_payload(payload)
+    _add_missing_columns(ws, header_row, cols, ordered)
 
     # Bound the scan to the real data extent (see _effective_last_row).
     key_cols = [i for i in (fmt_idx, fn_idx) if i is not None]
@@ -532,11 +614,24 @@ def _overlay_form_sheet(ws: Worksheet, payload: dict) -> None:
 
     email = ((payload.get('deployment') or {}).get('contactEmail') or '').strip()
 
+    # A row imported without a Fachdatenbezeichner is found by its number, as long as it is
+    # still that kind of row without one. A name typed for it since is written into that row,
+    # so the row is not added a second time below.
+    by_sheet_row = {s['sheet_row']: s for s in ordered
+                    if s.get('sheet_row') and s.get('field_name') not in row_for_fieldname}
+
+    def same_kind(spec: dict, kind: str) -> bool:
+        return kind == 'header' if spec.get('header') else kind in ('component', 'title')
+
     # Pass 2: overlay labels/placeholders/required and (changed) show/hide logic.
     for r in range(header_row + 1, last_row + 1):
         fn = cell(r, fn_idx).strip()
-        spec = by_fieldname.get(fn) if fn else None
         kind = _classify(cell(r, fmt_idx)) if fmt_idx is not None else ('blank',)
+        spec = by_fieldname.get(fn) if fn else by_sheet_row.get(r)
+        if spec is not None and not fn and not same_kind(spec, kind[0]):
+            spec = None
+        if spec is not None and not fn and spec.get('field_name') and fn_idx is not None:
+            ws.cell(row=r, column=fn_idx + 1).value = spec['field_name']
         if spec is None and kind[0] == 'metadata':
             spec = by_meta.get(kind[1])
         if spec is not None:
@@ -545,31 +640,185 @@ def _overlay_form_sheet(ws: Worksheet, payload: dict) -> None:
         elif kind[0] == 'email-of-form':
             _apply_email(ws, r, cols, email)
 
-    _place_new_rows(ws, cols, header_row, ordered, row_for_fieldname, optid_to_inputid)
+    sheet_rows_kept = {s['sheet_row'] for s in ordered if s.get('sheet_row')}
+    _drop_deleted_rows(ws, header_row, cols, owned - set(by_fieldname), owned_rows - sheet_rows_kept)
+    _reorder_rows(ws, header_row, cols, ordered)
+    last_row = _effective_last_row(ws, header_row, key_cols)
+    row_for_fieldname = {fn: r for r in range(header_row + 1, last_row + 1)
+                         if (fn := cell(r, fn_idx).strip())}
+    # Rows found by number are positions too, if the row still is that row (deleting and
+    # moving rows can shift it): the same kind, no Fachdatenbezeichner, the label just written.
+    located_rows = {id(spec): r for r, spec in by_sheet_row.items()
+                    if not spec.get('field_name')
+                    and same_kind(spec, _classify(cell(r, fmt_idx))[0]) and not cell(r, fn_idx).strip()
+                    and cell(r, cols.get('label_de')) == _render_link(
+                        (spec.get('label') or {}).get('DE', ''), spec.get('weblink') or '')}
+    _place_new_rows(ws, cols, header_row, last_row, ordered, row_for_fieldname, located_rows,
+                    optid_to_inputid)
 
 
-def _place_new_rows(ws: Worksheet, cols: dict, header_row: int,
+def _row_units(ws: Worksheet, header_row: int, cols: dict, heads: set[str]):
+    """Split the form rows into (prefix, units, suffix).
+
+    A unit is a row whose Fachdatenbezeichner is in `heads`, followed by its option rows
+    (which carry no Fachdatenbezeichner of their own) and any other rows up to the next unit;
+    rows after the last unit's options form the suffix, so trailing Acta-Nova blocks stay put.
+    """
+    fmt_idx, fn_idx = cols.get('format'), cols.get('field_name')
+    key_cols = [i for i in (fmt_idx, fn_idx) if i is not None]
+
+    def text(r, ci):
+        return _cell_text(ws.cell(row=r, column=ci + 1).value).strip() if ci is not None else ''
+
+    prefix: list[int] = []
+    units: list[tuple[str, list[int], int]] = []  # (head name, rows, how many are its own)
+    for r in range(header_row + 1, _effective_last_row(ws, header_row, key_cols) + 1):
+        fn = text(r, fn_idx)
+        if fn in heads:
+            units.append((fn, [r], 1))
+        elif not units:
+            prefix.append(r)
+        else:
+            name, rows, own = units[-1]
+            is_option = not fn and _classify(text(r, fmt_idx))[0] == 'option'
+            units[-1] = (name, rows + [r], own + 1 if is_option and own == len(rows) else own)
+    suffix: list[int] = []
+    if units:
+        name, rows, own = units[-1]
+        units[-1], suffix = (name, rows[:own], own), rows[own:]
+    return prefix, units, suffix
+
+
+def _drop_deleted_rows(ws: Worksheet, header_row: int, cols: dict, deleted: set[str],
+                       deleted_rows: set[int] = frozenset()) -> None:
+    """Remove the rows (and option rows) of fields the builder no longer has: by name, and
+    by number for rows that were imported without a Fachdatenbezeichner."""
+    fmt_idx, fn_idx = cols.get('format'), cols.get('field_name')
+
+    def text(r, ci):
+        return _cell_text(ws.cell(row=r, column=ci + 1).value).strip() if ci is not None else ''
+
+    spans = []  # (first row, how many)
+    if deleted:
+        spans += [(rows[0], own) for _, rows, own in _row_units(ws, header_row, cols, deleted)[1]]
+    for r in deleted_rows:
+        if text(r, fn_idx) or _classify(text(r, fmt_idx))[0] not in ('header', 'component', 'title'):
+            continue  # no longer the row it was
+        own = 1
+        while not text(r + own, fn_idx) and _classify(text(r + own, fmt_idx))[0] == 'option':
+            own += 1
+        spans.append((r, own))
+    for first, count in sorted(set(spans), reverse=True):
+        ws.delete_rows(first, amount=count)
+
+
+def _reorder_rows(ws: Worksheet, header_row: int, cols: dict, ordered: list[dict]) -> None:
+    """Put the rows the builder knows into the builder's order, moving each with its option
+    rows and the rows that follow it. A sheet already in order is left untouched."""
+    rank: dict[str, int] = {}
+    for spec in ordered:
+        if spec.get('field_name'):
+            rank.setdefault(spec['field_name'], len(rank))
+    prefix, units, suffix = _row_units(ws, header_row, cols, set(rank))
+    names = [u[0] for u in units]
+    if len(set(names)) != len(names):
+        return  # a Fachdatenbezeichner on several rows: no single place to put it
+    wanted = sorted(units, key=lambda u: rank[u[0]])
+    if [u[0] for u in wanted] == [u[0] for u in units]:
+        return
+    # Aggregate start/end rows bracket their fields by position; moving rows across them
+    # could pull a field into or out of the block, so such sheets keep their order.
+    fmt_idx = cols.get('format')
+    if fmt_idx is not None and any(
+            _classify(_cell_text(ws.cell(row=r, column=fmt_idx + 1).value))[0].startswith('aggregate')
+            for _, rows, _ in units for r in rows):
+        return
+    order = prefix + [r for _, rows, _ in wanted for r in rows] + suffix
+    width = max(i for i, h in enumerate(_row_values(ws, header_row), start=1) if h.strip())
+    snapshot = {r: _snapshot_row(ws, r, width) for r in order}
+    for target, source in zip(sorted(order), order):
+        _restore_row(ws, target, snapshot[source])
+
+
+def _snapshot_row(ws: Worksheet, r: int, width: int):
+    cells = [ws.cell(row=r, column=c) for c in range(1, width + 1)]
+    return ([(c.value, copy(c._style), copy(c.hyperlink), copy(c.comment)) for c in cells],
+            ws.row_dimensions[r].height)
+
+
+def _restore_row(ws: Worksheet, r: int, snapshot) -> None:
+    cells, height = snapshot
+    for c, (value, style, link, comment) in enumerate(cells, start=1):
+        target = ws.cell(row=r, column=c)
+        target.value, target._style = value, copy(style)
+        target.hyperlink, target.comment = copy(link), copy(comment)
+    ws.row_dimensions[r].height = height
+
+
+def _add_missing_columns(ws: Worksheet, header_row: int, cols: dict, specs: list[dict]) -> None:
+    """Append a column the workbook lacks (Verstecktes Feld, developer attributes), once some
+    field uses it."""
+    header = _row_values(ws, header_row)
+    next_idx = max((i for i, h in enumerate(header) if h.strip()), default=-1) + 1
+    wanted = [('hidden', 'Verstecktes Feld', lambda s: s.get('hidden'))] + [
+        (key, title, lambda s, key=key: (s.get('dev') or {}).get(key))
+        for key, _, title in DEVELOPER_ATTRS]
+    for key, title, used in wanted:
+        if cols.get(key) is not None or not any(used(s) for s in specs):
+            continue
+        cell = ws.cell(row=header_row, column=next_idx + 1)
+        cell.value = title
+        if next_idx:
+            cell._style = copy(ws.cell(row=header_row, column=next_idx)._style)
+        cols[key] = next_idx
+        next_idx += 1
+
+
+def _place_new_rows(ws: Worksheet, cols: dict, header_row: int, last_row: int,
                     ordered: list[dict], row_for_fieldname: dict[str, int],
-                    optid_to_inputid: dict) -> None:
+                    header_rows: dict[int, int], optid_to_inputid: dict) -> None:
     """Insert fields added in the builder at their correct line.
 
     Walking the builder's document order, each new field is queued to be inserted right after
     the spreadsheet row of the nearest preceding field that already exists (its section header
     counts). Consecutive new fields sharing an anchor are inserted as a block, in order.
+
+    Builder content without a Fachdatenbezeichner cannot be looked up in the sheet. A new
+    field that follows such content goes before the next field that can be found instead, or
+    after the form's last row when none follows: anchoring on the last field found further up
+    would pull it above everything in between (to the very top, in a sheet without the column).
     """
     groups: list[tuple[int, list[dict]]] = []  # (anchor original-row, specs to insert after it)
+
+    def queue(anchor: int, specs: list[dict]):
+        if groups and groups[-1][0] == anchor:
+            groups[-1][1].extend(specs)
+        else:
+            groups.append((anchor, list(specs)))
+
     last_anchor = header_row
+    unlocated = False   # builder content since last_anchor that the sheet cannot be searched for
+    waiting: list[dict] = []  # new rows to go before the next row that is found
     for spec in ordered:
         fn = spec.get('field_name')
-        if fn and fn in row_for_fieldname:
-            last_anchor = row_for_fieldname[fn]
+        found = row_for_fieldname.get(fn) if fn else header_rows.get(id(spec))
+        if found:
+            if waiting:
+                queue(found - 1, waiting)
+                waiting = []
+            last_anchor, unlocated = found, False
             continue
         if not fn:
-            continue  # header marker for a new section / non-anchorable row
-        if groups and groups[-1][0] == last_anchor:
-            groups[-1][1].append(spec)
+            # Metadata rows are found by their Format, so they say nothing about position.
+            if not (spec.get('meta') or spec.get('email_of_form')):
+                unlocated = True
+            continue
+        if unlocated:
+            waiting.append(spec)
         else:
-            groups.append((last_anchor, [spec]))
+            queue(last_anchor, [spec])
+    if waiting:
+        queue(last_row, waiting)
 
     # Apply from the bottom up so the anchors of not-yet-processed (higher) groups stay valid.
     for anchor_row, specs in sorted(groups, key=lambda g: g[0], reverse=True):
@@ -611,6 +860,50 @@ def _insert_specs_after(ws: Worksheet, cols: dict, anchor_row: int, specs: list[
     ws.insert_rows(at, amount=len(specs))
     for i, spec in enumerate(specs):
         _write_row(ws, at + i, cols, spec, optid_to_inputid)
+
+
+# ── Deployment tab ──────────────────────────────────────────────────
+
+def _find_deployment_sheet(wb):
+    for ws in wb.worksheets:
+        if _fold(ws.title) == _fold(DEPLOYMENT_SHEET):
+            return ws
+    return None
+
+
+def _deployment_rows_by_key(ws) -> dict[str, int]:
+    return {key: r for r in range(1, ws.max_row + 1)
+            if (key := deployment_key(_cell_text(ws.cell(row=r, column=1).value)))}
+
+
+def _write_deployment_sheet(wb, payload: dict) -> None:
+    """Record the builder's deployment ids on their own tab of the workbook.
+
+    This is what makes a spec workbook self-sufficient: importing it afresh elsewhere
+    picks the ids up (see excel_importer.read_deployment_sheet) instead of asking for
+    them again. The tab is written even when every value is still blank — it then
+    doubles as the sheet to fill in by hand.
+
+    An existing tab is updated row by row rather than rewritten, so anything else
+    somebody put on it survives the export.
+    """
+    dep = {**(payload.get('deployment') or {}), 'formName': payload.get('formTitle')}
+    ws = _find_deployment_sheet(wb)
+    if ws is None:
+        ws = wb.create_sheet(DEPLOYMENT_SHEET)
+        ws.append(list(DEPLOYMENT_HEADERS))
+        for col, width in zip('ABC', (18, 26, 44)):
+            ws.column_dimensions[col].width = width
+    value_col = deployment_value_column(
+        [_row_values(ws, r) for r in range(1, ws.max_row + 1)])
+    rows_by_key = _deployment_rows_by_key(ws)
+    for key, label in DEPLOYMENT_FIELDS:
+        value = (str(dep.get(key) or '')).strip() or None
+        r = rows_by_key.get(key)
+        if r is None:
+            ws.append([key, label] + [''] * (value_col - 2) + [value])
+        else:
+            ws.cell(row=r, column=value_col + 1).value = value
 
 
 # ── Version sheet ─────────────────────────────────────────────────────────────
@@ -712,26 +1005,28 @@ def _find_version_row(ws, version_col: int, version: str) -> Optional[int]:
     return None
 
 
-def _ensure_baseline_version(wb) -> None:
-    """Seed a single '0.1' version row if the workbook has no version history yet."""
+def _ensure_baseline_version(wb) -> str:
+    """Seed a single '0.1' version row if the workbook has no version history yet.
+
+    Returns the version the workbook now carries, so an unversioned export can still be
+    named after it."""
     ws = _find_version_sheet(wb)
     if ws is None:
         ws = wb.create_sheet('Version')
         ws.append(['Version', 'Datum', 'Änderung', 'Autor'])
-    has_rows = any(_cell_text(ws.cell(row=r, column=1).value).strip()
-                   for r in range(2, ws.max_row + 1))
-    if not has_rows:
-        r = _last_content_row(ws, [0, 1, 2, 3]) + 1
-        _write_version_cells(ws, r, version_col=0, date_col=1, version='0.1')
+    rows = [v for r in range(2, ws.max_row + 1)
+            if (v := _cell_text(ws.cell(row=r, column=1).value).strip())]
+    if rows:
+        return rows[-1]
+    r = _last_content_row(ws, [0, 1, 2, 3]) + 1
+    _write_version_cells(ws, r, version_col=0, date_col=1, version='0.1')
+    return '0.1'
 
 
-def _append_version_row(wb, *, author: str, note: str, version: str) -> None:
-    ws = _find_version_sheet(wb)
-    if ws is None:
-        ws = wb.create_sheet('Version')
-        ws.append(['Version', 'Datum', 'Änderung', 'Autor'])
-    head = _row_values(ws, 1)
-    folded = [_fold(v) for v in head]
+
+def _version_columns(ws) -> tuple[list[str], int, int, int]:
+    """(folded header, Version column, Datum column, Änderung column) of a Version sheet."""
+    folded = [_fold(v) for v in _row_values(ws, 1)]
 
     def col(*needles, default):
         for i, h in enumerate(folded):
@@ -739,9 +1034,39 @@ def _append_version_row(wb, *, author: str, note: str, version: str) -> None:
                 return i
         return default
 
-    version_col = col('version', default=0)
-    date_col = col('datum', 'date', default=1)
-    change_col = col('nderung', 'change', default=2)  # "Änderung" folds to "nderung"
+    return (folded, col('version', default=0), col('datum', 'date', default=1),
+            col('nderung', 'change', default=2))  # "Änderung" folds to "nderung"
+
+
+def spec_revision(xlsx: Optional[bytes]) -> Optional[dict]:
+    """{'version', 'date'} of the spec workbook's latest Version row — the last one filled
+    in, as _next_version reads it — or None when there is no such row."""
+    if not xlsx:
+        return None
+    try:
+        wb = load_workbook(io.BytesIO(xlsx), data_only=True)
+    except Exception:
+        return None
+    ws = _find_version_sheet(wb)
+    if ws is None:
+        return None
+    _, version_col, date_col, _ = _version_columns(ws)
+    row = _last_content_row(ws, [version_col])
+    if row == 1:
+        return None
+    version = _cell_text(ws.cell(row=row, column=version_col + 1).value).strip()
+    date = ws.cell(row=row, column=date_col + 1).value
+    if isinstance(date, (datetime.date, datetime.datetime)):
+        date = date.strftime('%Y-%m-%d')
+    return {'version': version, 'date': _cell_text(date).strip()}
+
+
+def _append_version_row(wb, *, author: str, note: str, version: str) -> str:
+    ws = _find_version_sheet(wb)
+    if ws is None:
+        ws = wb.create_sheet('Version')
+        ws.append(['Version', 'Datum', 'Änderung', 'Autor'])
+    folded, version_col, date_col, change_col = _version_columns(ws)
     author_col = change_col + 1
     # Some templates have a dedicated author column after "Änderung" (BAV); others fold the
     # author into the Änderung column itself (FormGeneratorTemplate). Detect which.
@@ -758,10 +1083,10 @@ def _append_version_row(wb, *, author: str, note: str, version: str) -> None:
     r = _find_version_row(ws, version_col, version)
     if r is None:
         r = _last_content_row(ws, [version_col, date_col, change_col, author_col]) + 1
+    recorded = version or _next_version(ws, version_col)
     # Write Version + Datum as real number/date values (matching the rows above), so Excel
     # right-aligns and formats them instead of storing left-aligned General text.
-    _write_version_cells(ws, r, version_col, date_col,
-                         version or _next_version(ws, version_col))
+    _write_version_cells(ws, r, version_col, date_col, recorded)
     if has_author_col:
         ws.cell(row=r, column=change_col + 1).value = note or None
         if author:
@@ -769,3 +1094,4 @@ def _append_version_row(wb, *, author: str, note: str, version: str) -> None:
     else:
         # No author column → combine into the change cell (matches templates that put the name there).
         ws.cell(row=r, column=change_col + 1).value = ' – '.join(p for p in (note, author) if p) or None
+    return recorded

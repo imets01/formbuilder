@@ -3,40 +3,6 @@
 <div *ngIf="formState.view() === 'editor'" class="h-screen w-screen flex flex-col bg-gray-50">
   <app-top-nav-bar class="w-full flex-shrink-0"></app-top-nav-bar>
 
-  @if (formState.importWarnings().length) {
-    <div class="flex-shrink-0 bg-amber-50 border-b border-amber-200 text-amber-900">
-      <div class="px-6 py-2 flex items-start gap-3">
-        <mat-icon class="!w-5 !h-5 !text-[20px] text-amber-600 mt-0.5">warning</mat-icon>
-        <div class="flex-1 min-w-0">
-          <button type="button" (click)="toggleWarnings()"
-                  class="flex items-center gap-1 text-sm font-semibold hover:underline">
-            {{ formState.importWarnings().length }} row(s) in the imported spreadsheet couldn't be reconstructed
-            <mat-icon class="!w-[18px] !h-[18px] !text-[18px] transition-transform"
-                      [class.rotate-180]="warningsExpanded()">expand_more</mat-icon>
-          </button>
-          @if (warningsExpanded()) {
-            <ul class="mt-1.5 space-y-0.5 text-xs text-amber-800 max-h-40 overflow-auto pr-2">
-              @for (w of formState.importWarnings(); track $index) {
-                <li class="flex gap-2">
-                  <span class="text-amber-400">•</span>
-                  <span class="font-mono break-all">{{ w }}</span>
-                </li>
-              }
-            </ul>
-            <p class="mt-1.5 text-[11px] text-amber-700">
-              These rows were skipped — usually a typo'd or unsupported <span class="font-mono">Format PSPH</span>
-              value in the source. Fix them in the spreadsheet and re-import, or add the fields manually.
-            </p>
-          }
-        </div>
-        <button type="button" (click)="formState.dismissImportWarnings()"
-                title="Dismiss" class="p-1 rounded hover:bg-amber-100 text-amber-600 flex-shrink-0">
-          <mat-icon class="!w-[18px] !h-[18px] !text-[18px]">close</mat-icon>
-        </button>
-      </div>
-    </div>
-  }
-
   <div class="flex flex-1 w-full overflow-hidden" [class.select-none]="resizingSidebar()">
     <app-left-sidebar class="w-72 flex-shrink-0"></app-left-sidebar>
     <app-canvas class="flex-1 flex flex-col min-w-0"></app-canvas>

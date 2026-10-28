@@ -31,13 +31,6 @@ export class AppComponent {
   telemetry = inject(TelemetryService);
   title = 'frontend';
 
-  /** Whether the import-warnings banner is expanded to show the full list. */
-  warningsExpanded = signal<boolean>(true);
-
-  toggleWarnings() {
-    this.warningsExpanded.update(v => !v);
-  }
-
   // --- Resizable right sidebar -------------------------------------------------
   // Wide catalogs (e.g. a country list in "Katalog mehrfach") are unreadable at the
   // default width, so the properties panel can be dragged wider and remembers it.

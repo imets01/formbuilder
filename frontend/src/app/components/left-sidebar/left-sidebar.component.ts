@@ -46,6 +46,7 @@ export class LeftSidebarComponent {
         { id: 'text-area', name: 'Text Area', icon: 'notes' },
         { id: 'date', name: 'Date', icon: 'calendar_today' },
         { id: 'number', name: 'Number', icon: 'numbers' },
+        { id: 'number-dropdown', name: 'Number Dropdown', icon: 'pin', description: 'pick 1 to N' },
       ]
     },
     {

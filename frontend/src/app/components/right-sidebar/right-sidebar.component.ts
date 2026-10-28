@@ -1,8 +1,9 @@
 import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { FormStateService, FormComponentInstance, FormSection, SplitVariant, SplitConfig, SPLIT_LABELS, isMetadataComponentId, metadataLabelFor, LogicCondition, SectionTab, usesNativeLanguagePicker } from '../../services/form-state.service';
+import { FormStateService, FormComponentInstance, FormSection, SplitVariant, SplitConfig, SPLIT_LABELS, isMetadataComponentId, metadataLabelFor, LogicCondition, SectionTab, usesNativeLanguagePicker, DEVELOPER_ATTR_COMPONENTS, NUMBER_DROPDOWN_MAX } from '../../services/form-state.service';
 import { DictionaryService } from '../../services/dictionary.service';
+import { fieldNameError } from '../../services/field-names';
 import { parsePaste, distributePaste, LANGUAGE_ALIASES, DATA_FIELD_ALIASES } from '../../services/paste-fill';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatDividerModule } from '@angular/material/divider';
@@ -34,7 +35,7 @@ interface PasteHint {
 /** The identifier trio, in PSPH workbook column order. */
 const DATA_FIELDS = ['fieldName', 'refID', 'compId'];
 const DATA_FIELD_LABELS: Record<string, string> = {
-  fieldName: 'Field Name',
+  fieldName: 'Field Name (Fachdatenbezeichner)',
   refID: 'Ref ID',
   compId: 'Complimentary ID'
 };
@@ -136,6 +137,26 @@ export class RightSidebarComponent {
     return componentId === 'split-input';
   }
 
+  fieldNameError = fieldNameError;
+
+  /** A field imported before sheet rows were remembered has no row to write a typed name
+   *  into; the export would add a second one, so it needs a re-import first. */
+  missingNameHint(componentId: string | undefined, fieldName: string | undefined,
+                  sheetRow: number | undefined): 'reimport' | 'required' | null {
+    if ((fieldName ?? '').trim() || componentId === 'text' || componentId === 'electronic-consent') {
+      return null;
+    }
+    return this.formState.hasSourceSpreadsheet() && !sheetRow ? 'reimport' : 'required';
+  }
+
+  splitSheetRow(side: 'a' | 'b'): number | undefined {
+    return this.formState.selectedComponent()?.splitConfig?.[side]?.sheetRow;
+  }
+
+  supportsDeveloperAttrs(componentId: string | undefined): boolean {
+    return !!componentId && DEVELOPER_ATTR_COMPONENTS.has(componentId);
+  }
+
   isMetadata(componentId: string | undefined): boolean {
     return isMetadataComponentId(componentId);
   }
@@ -201,6 +222,13 @@ export class RightSidebarComponent {
         || componentId === 'email' || componentId === 'phone';
   }
 
+  /** NumberDropDown: options 1..maxLength, no placeholder or mouseover. */
+  isNumberDropdown(componentId: string | undefined): boolean {
+    return componentId === 'number-dropdown';
+  }
+
+  readonly numberDropdownMax = NUMBER_DROPDOWN_MAX;
+
   isNumericRange(componentId: string | undefined): boolean {
     return componentId === 'number';
   }
@@ -215,6 +243,9 @@ export class RightSidebarComponent {
     }
     if (this.isMetadata(componentId)) {
       return [{ value: 'title', label: 'Translations' }];
+    }
+    if (this.isNumberDropdown(componentId)) {
+      return [{ value: 'title', label: 'Field Label' }];
     }
     if (this.isOptionGroup(componentId) || this.isUpload(componentId) || this.isLabelOnly(componentId)) {
       return [
@@ -243,6 +274,10 @@ export class RightSidebarComponent {
    */
   isFixedOptionGroup(componentId: string | undefined): boolean {
     return componentId === 'electronic-consent';
+  }
+
+  optionsTakeRefId(componentId: string | undefined): boolean {
+    return componentId !== 'korrespondenzsprache';
   }
 
   isNativeLanguagePicker(component: FormComponentInstance): boolean {

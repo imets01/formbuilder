@@ -21,6 +21,9 @@ Angular editor ──▶ form document ──▶ build_form_json ──▶ previ
 - **Excel round-trip** — import an existing specification workbook, keep editing visually,
   export it back with a recorded version and change note. Export overlays the original
   file rather than regenerating it, so columns the builder doesn't own are preserved.
+- **Import issues you can work through** — rows the importer could not reconstruct are
+  kept as a coded, row-anchored list that ticks itself off as you fix each one on the
+  canvas; or fix the sheet and re-import over the same form, keeping its name and settings.
 - **Live preview** in all four languages, with conditional fields visibly marked.
 - **Repeatable sections** (aggregates) for blocks that repeat per person or per item.
 

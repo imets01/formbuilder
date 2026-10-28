@@ -26,10 +26,12 @@ flowchart LR
 | `app.py` | Routes. Thin: parse, delegate, stream |
 | `json_builder.py` | Document → form-structure JSON. **Pure**, no I/O |
 | `forms_store.py` | One JSON file per form, atomic writes; an id pattern blocks path traversal |
-| `excel_importer.py` | Workbook → document |
+| `excel_importer.py` | Workbook → document, plus the coded findings for what it could not read |
 | `spreadsheet_exporter.py` | Document + original workbook → updated workbook (overlay) |
 | `stub_renderer.py` | Document → one standalone HTML document per language |
 | `dictionary.py` | Phrase lookups from `ftl_consts/*.txt` |
+| `field_names.py` | What a Fachdatenbezeichner may contain, and the rejection it raises |
+| `input_events.py` | The per-field JS handler attribute, parsed and re-emitted |
 | `paths.py` | Filename conventions and the storage location |
 
 ## Frontend modules
@@ -38,13 +40,18 @@ flowchart LR
 |---|---|
 | `services/form-state.service.ts` | The document, selection, undo/redo, autosave, numbering. Everything else reads it |
 | `services/form-storage.service.ts` | `/api/forms` wrapper, generates form ids |
-| `services/form-transfer.service.ts` | JSON export/import, workbook upload |
+| `services/form-transfer.service.ts` | JSON export/import, workbook upload, re-import |
+| `services/import-issues.ts` | Which import findings are still outstanding, recomputed from the document |
+| `services/field-names.ts` | The client-side half of the Fachdatenbezeichner rule |
+| `services/form-name.ts` | The output base name, mirroring `json_builder.output_base_name` |
 | `services/paste-fill.ts` | Multi-value clipboard parsing |
 | `services/catalogs.ts` | Country and canton lists |
 | `services/tour.service.ts` | First-run walkthrough |
 | `components/canvas/` | The form sketch. Dispatches on `component.id` |
 | `components/right-sidebar/` | Properties. Which controls appear is decided by per-type helper methods |
 | `components/left-sidebar/` | The palette |
+| `components/import-issues/` | The outstanding-findings list, and the re-import prompt |
+| `components/developer-dialog/` | Deployment settings: naming and ids |
 | `components/top-nav-bar/`, `landing-page/`, `tour/` | Page frame, form list, walkthrough |
 
 No router — `formState.view()` switches between `'landing'` and `'editor'`. Signals
@@ -79,7 +86,8 @@ Preview
 | `GET /` · `/api/heartbeat` | Health |
 | `GET/PUT/DELETE /api/forms[/<id>]` | Store. PUT is the autosave target; URL id wins over the body's. Names are unique — a rename onto a taken name is 409 |
 | `POST /api/forms/<id>/source` · `/export-xlsx` | Store the original workbook; write the updated one back |
-| `POST /api/import-excel` | → `{payload, skipped[]}` |
+| `POST /api/import-excel` | → `{payload, skipped[], issues[]}` — `skipped` is the human text, `issues` the same findings coded and anchored to their sheet row |
+| `POST /api/forms/<id>/reimport` | Replace a stored form from a fresh workbook, keeping its id, name, deployment settings and display toggles (`forms_store.merge_reimport`). A sheet that fails to parse changes nothing |
 | `GET /api/translate-suggest` | Phrase lookup |
 | `POST /api/generate-json` | Form-structure JSON only — **the debugging endpoint** |
 | `POST /api/preview` · `GET /preview` | Render, then serve by token |

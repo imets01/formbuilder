@@ -1,11 +1,14 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Subject, of } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { catchError, debounceTime, map, switchMap } from 'rxjs/operators';
 import { FormStorageService, SavedForm, SavedFormPayload, SavedFormSummary, DeploymentSettings } from './form-storage.service';
 import { DEFAULT_FORM_TITLE, isFormTitleTaken } from './form-title';
 import { COUNTRY_CATALOG, CANTON_CATALOG, CatalogEntry } from './catalogs';
 import { TelemetryService } from './telemetry.service';
+import { ImportIssue, annotateAmbiguity, issueKey, outstandingIssues } from './import-issues';
+import { FormTransferService } from './form-transfer.service';
+import { exportFileName, outputBaseName } from './form-name';
 import { environment } from '../../environments/environment';
 
 export type AppView = 'landing' | 'editor';
@@ -15,7 +18,7 @@ export const DEFAULT_LANGUAGE = 'DE';
 
 /** Blank deployment settings (every field empty → backend keeps today's placeholder behaviour). */
 export function emptyDeployment(): DeploymentSettings {
-  return { compName: '', usrId: '', usrIdDev: '', contactEmail: '', deId: '', frId: '', itId: '', enId: '', wikiLink: '', issueLink: '', validatorClass: '' };
+  return { baseName: '', compName: '', usrId: '', usrIdDev: '', contactEmail: '', deId: '', frId: '', itId: '', enId: '', wikiLink: '', issueLink: '', validatorClass: '' };
 }
 
 export type SplitVariant = 'name-vorname' | 'strasse-nr' | 'plz-ort';
@@ -59,6 +62,7 @@ export interface SplitSubConfig {
   mouseOverIt?: string;
   fieldName: string;
   refID?: string;
+  sheetRow?: number;
 }
 
 export interface SplitConfig {
@@ -75,6 +79,12 @@ export const METADATA_COMPONENTS: { id: string; label: string; format: string }[
   { id: 'meta-address',       label: 'Address',        format: 'Adresse Bundesamt' },
   { id: 'meta-zipCity',       label: 'ZIP and City',   format: 'PLZ und Ort des Bundesamtes' }
 ];
+
+/** Rendered by a platform-side row macro that passes these through; mirrors excel_importer.py. */
+/** Mirrors constants.number_dropdown_max in the backend. */
+export const NUMBER_DROPDOWN_MAX = 999;
+
+export const DEVELOPER_ATTR_COMPONENTS = new Set(['text-input', 'text-area', 'number', 'date', 'email', 'phone']);
 
 export function isMetadataComponentId(id: string | undefined): boolean {
   return !!id && id.startsWith('meta-');
@@ -111,6 +121,15 @@ export function usesNativeLanguagePicker(comp: FormComponentInstance): boolean {
   return opts.every((opt, i) => ['DE', 'FR', 'IT', 'EN'].every(lang =>
     (opt.translations?.[lang] ?? '').trim().toLowerCase()
       === NATIVE_LANGUAGE_OPTIONS[i].translations[lang].toLowerCase()));
+}
+
+function migrateOnChange(comp: FormComponentInstance): FormComponentInstance {
+  if (!comp.onChange) return comp;
+  const { onChange, ...rest } = comp;
+  if (rest.events) return rest;
+  if (onChange.includes('"') && onChange.includes("'")) return { ...rest, events: onChange };  // read as onchange
+  const quote = onChange.includes('"') ? "'" : '"';
+  return { ...rest, events: `onchange=${quote}${onChange}${quote}` };
 }
 
 export const KORRESPONDENZSPRACHE_TITLE = {
@@ -153,6 +172,7 @@ export const LABEL_DEFAULTS: Record<string, Record<string, string>> = {
   'text-area':  { DE: 'Textbereich',  FR: 'Zone de texte',        IT: 'Area di testo',      EN: 'Text area' }, 
   'date':       { DE: 'Datum',        FR: 'Date',                 IT: 'Data',               EN: 'Date' },
   'number':     { DE: 'Zahl',         FR: 'Nombre',               IT: 'Numero',             EN: 'Number' },
+  'number-dropdown': { DE: 'Anzahl',  FR: 'Nombre',               IT: 'Numero',             EN: 'Quantity' },
   'email':      { DE: 'E-Mail',       FR: 'Adresse électronique', IT: 'Indirizzo e-mail',   EN: 'E-mail' },
   'phone':      { DE: 'Telefonnummer', FR: 'Numéro de téléphone', IT: 'Numero di telefono', EN: 'Phone number' }
 };
@@ -181,6 +201,15 @@ export interface FormComponentInstance {
   refID?: string;
   compId?: string;
   commentsForDevs?: string;
+  /** Event attributes as in HTML, e.g. `onchange="check(this);" onblur="trim(this)"`. */
+  events?: string;
+  /** Before events were generic: a bare onchange handler. Migrated to `events` on load. */
+  onChange?: string;
+  /** Sheet row the field was imported from without a Fachdatenbezeichner; the export finds
+   *  the row by it, and writes a name typed here into it. */
+  sheetRow?: number;
+  inputStyle?: string;
+  inputClass?: string;
   dec?: string;
   mouseOverDe?: string;
   mouseOverFr?: string;
@@ -233,6 +262,9 @@ export interface FormSection {
   /** Per-language heading text (DE/FR/IT/EN). Falls back to `title` when a language is unset. */
   translations?: { title?: Record<string, string> };
   sourceRef?: string;
+  sheetRow?: number;
+  /** Imported fields that came before any header row; the sheet has no header for it. */
+  headerless?: boolean;
   refID?: string;
   compId?: string;
   components: FormComponentInstance[];
@@ -250,9 +282,21 @@ export interface FormSection {
 }
 export const ID_RANGE_SEPARATOR = '–';
 
+/** The file name a download response asked for, or '' when the header is absent or unreadable. */
+function attachmentName(disposition: string | null): string {
+  if (!disposition) return '';
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (encoded) {
+    try { return decodeURIComponent(encoded[1].trim()); } catch { /* fall through to plain */ }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(disposition);
+  return plain ? plain[1].trim() : '';
+}
+
 @Injectable({ providedIn: 'root' })
 export class FormStateService {
   private storage = inject(FormStorageService);
+  private transfer = inject(FormTransferService);
   private telemetry = inject(TelemetryService);
 
   sections = signal<FormSection[]>([
@@ -278,15 +322,53 @@ export class FormStateService {
   private lastSavedTitle: string | null = null;
   /** True when this form was created by importing a spreadsheet stored server-side (round-trip export available). */
   hasSourceSpreadsheet = signal<boolean>(false);
-  /** Rows the importer couldn't reconstruct from the last import (e.g. unknown/typo'd formats). */
-  importWarnings = signal<string[]>([]);
+  /**
+   * Findings from the spreadsheet import this form came from (unknown formats, dropped
+   * show/hide conditions …). Stored with the form rather than shown once, so they can be
+   * reopened at any time; see `openImportIssues` for the count the badge reads.
+   */
+  importIssues = signal<ImportIssue[]>([]);
+  /** Set right after an import so the editor can open the issue list unprompted, once. */
+  importIssuesJustArrived = signal<number>(0);
   /** Observable so the walkthrough can react to a preview click. */
   previewRequests = signal<number>(0);
   /** Counted, not inferred from the section list, so an undo isn't read as a deletion. */
   deletions = signal<number>(0);
 
-  dismissImportWarnings() {
-    this.importWarnings.set([]);
+  /**
+   * The import findings still outstanding — what the badge counts.
+   *
+   * Recomputed from the live document, so fixing a row in the builder (adding the field
+   * that was skipped, giving a field its missing show/hide condition) drops it from the
+   * list on its own. Findings the document cannot speak to stay until marked by hand.
+   */
+  outstandingImportIssues = computed<ImportIssue[]>(
+    () => outstandingIssues(this.importIssues(), this.sections()));
+
+  /** Findings that have since been dealt with, kept visible as a record of the import. */
+  settledImportIssues = computed<ImportIssue[]>(() => {
+    const open = new Set(this.outstandingImportIssues().map(issueKey));
+    return this.importIssues().filter(issue => !open.has(issueKey(issue)));
+  });
+
+  /** Record that the user has checked a finding the document cannot clear by itself. */
+  markImportIssueFixed(issue: ImportIssue, fixed: boolean) {
+    const key = issueKey(issue);
+    this.importIssues.update(issues => issues.map(candidate =>
+      issueKey(candidate) === key
+        ? { ...candidate, fixedAt: fixed ? Date.now() : undefined }
+        : candidate));
+  }
+
+  /** Drop the import record entirely (it cannot be brought back). */
+  clearImportIssues() {
+    this.importIssues.set([]);
+  }
+
+  /** Take the findings of a fresh import of this form, pinning the ones already satisfied. */
+  setImportIssues(issues: ImportIssue[]) {
+    this.importIssues.set(annotateAmbiguity(issues, this.sections()));
+    this.importIssuesJustArrived.update(n => n + 1);
   }
 
   // ── Undo / redo ────────────────────────────────────────────────────────────
@@ -306,6 +388,14 @@ export class FormStateService {
   // Autosave goes over the network now, so debounce edits and let switchMap drop
   // any in-flight save when a newer one arrives (last write wins).
   private saveTrigger = new Subject<SavedForm>();
+  /**
+   * What the server holds for the open form, as last loaded or sent. Opening a form sets the
+   * same signals an edit does, so without this every open was saved — and bumped "Last
+   * edited" — although nothing changed.
+   */
+  private persisted: { id: string; snapshot: string } | null = null;
+  /** The latest save handed to the debounce and not yet answered; see saveNow(). */
+  private unsentSave: SavedForm | null = null;
 
   constructor() {
     this.saveTrigger.pipe(
@@ -321,7 +411,10 @@ export class FormStateService {
         }))
       )),
       takeUntilDestroyed()
-    ).subscribe(result => this.reconcileSavedTitle(result));
+    ).subscribe(result => {
+      if (result.sent === this.unsentSave) this.unsentSave = null;
+      this.reconcileSavedTitle(result);
+    });
 
     // Watch the document signals; schedule a coalesced history commit on real changes.
     effect(() => {
@@ -335,20 +428,43 @@ export class FormStateService {
       const id = this.currentFormId();
       if (!id || this.view() !== 'editor') return;
       // Track signals so the effect re-runs on edits.
-      const payload: SavedFormPayload = {
-        sections: this.sections(),
-        formTitle: this.formTitle(),
-        disableInputSize: this.disableInputSize(),
-        disableMouseOver: this.disableMouseOver(),
-        deployment: this.deployment()
-      };
-      this.saveTrigger.next({
+      const payload = this.savedPayload();
+      // Sent on every save: the stored form is replaced wholesale, so leaving these
+      // out would drop the import record on the first edit after an import.
+      const importIssues = this.importIssues();
+      const snapshot = JSON.stringify({ payload, importIssues });
+      if (this.persisted?.id === id && this.persisted.snapshot === snapshot) return;
+      this.persisted = { id, snapshot };
+      this.unsentSave = {
         id,
         title: payload.formTitle || DEFAULT_FORM_TITLE,
         updatedAt: Date.now(),
-        payload
-      });
+        payload,
+        importIssues
+      };
+      this.saveTrigger.next(this.unsentSave);
     });
+  }
+
+  async saveNow(): Promise<void> {
+    const pending = this.unsentSave;
+    if (!pending) return;
+    try {
+      await firstValueFrom(this.storage.save(pending));
+      if (this.unsentSave === pending) this.unsentSave = null;
+    } catch {
+      // Nothing more to do on the way out; the edit before it is already stored.
+    }
+  }
+
+  private savedPayload(): SavedFormPayload {
+    return {
+      sections: this.sections(),
+      formTitle: this.formTitle(),
+      disableInputSize: this.disableInputSize(),
+      disableMouseOver: this.disableMouseOver(),
+      deployment: this.deployment()
+    };
   }
 
   /**
@@ -503,34 +619,64 @@ export class FormStateService {
     this.selectedComponentIndex.set(null);
     this.currentFormId.set(id);
     this.hasSourceSpreadsheet.set(false);
-    this.importWarnings.set([]);
+    this.importIssues.set([]);
     this.view.set('editor');
     this.resetHistory();
     this.telemetry.record('formOpen', 'new', id);
   }
 
-  openForm(id: string) {
-    this.importWarnings.set([]);  // cleared synchronously; an import sets warnings after this call
+  /** `revealImportIssues` opens the import-issue list on arrival — used right after an import. */
+  openForm(id: string, options: { revealImportIssues?: boolean } = {}) {
+    this.importIssues.set([]);  // cleared synchronously; the load below restores the form's own
     this.displayLanguage.set(DEFAULT_LANGUAGE);
     this.refreshSavedForms();
     this.titleConflict.set(null);
     this.storage.load(id).subscribe(saved => {
       if (!saved) return;
-      const p = saved.payload;
-      this.lastSavedTitle = saved.title ?? p.formTitle ?? DEFAULT_FORM_TITLE;
-      this.sections.set(this.normalizeSections(p.sections ?? []));
-      this.formTitle.set(p.formTitle ?? DEFAULT_FORM_TITLE);
-      this.disableInputSize.set(!!p.disableInputSize);
-      this.disableMouseOver.set(!!p.disableMouseOver);
-      this.deployment.set({ ...emptyDeployment(), ...(p.deployment ?? {}) });
-      this.selectedSectionIndex.set(null);
-      this.selectedComponentIndex.set(null);
-      this.currentFormId.set(saved.id);
-      this.hasSourceSpreadsheet.set(!!saved.hasSource);
-      this.view.set('editor');
-      this.resetHistory();
+      this.loadSavedForm(saved);
+      if (options.revealImportIssues) this.importIssuesJustArrived.update(n => n + 1);
       this.telemetry.record('formOpen', 'saved', saved.id);
     });
+  }
+
+  /** Put a form fetched from the server onto the canvas, replacing whatever is there. */
+  private loadSavedForm(saved: SavedForm) {
+    const p = saved.payload;
+    this.lastSavedTitle = saved.title ?? p.formTitle ?? DEFAULT_FORM_TITLE;
+    this.sections.set(this.normalizeSections(p.sections ?? []));
+    this.formTitle.set(p.formTitle ?? DEFAULT_FORM_TITLE);
+    this.disableInputSize.set(!!p.disableInputSize);
+    this.disableMouseOver.set(!!p.disableMouseOver);
+    this.deployment.set({ ...emptyDeployment(), ...(p.deployment ?? {}) });
+    this.selectedSectionIndex.set(null);
+    this.selectedComponentIndex.set(null);
+    this.currentFormId.set(saved.id);
+    this.hasSourceSpreadsheet.set(!!saved.hasSource);
+    this.importIssues.set(saved.importIssues ?? []);
+    this.view.set('editor');
+    this.resetHistory();
+    this.persisted = {
+      id: saved.id,
+      snapshot: JSON.stringify({ payload: this.savedPayload(), importIssues: this.importIssues() }),
+    };
+  }
+
+  /**
+   * Replace the open form with a fresh import of `file`, keeping its id and name.
+   *
+   * The round trip the other way: fix the spreadsheet, re-import it here, and the form
+   * keeps its place in My Forms instead of having to be deleted and imported anew. The
+   * server decides what survives (deployment ids, display toggles) — see
+   * forms_store.merge_reimport — so the canvas is reloaded from its answer.
+   */
+  async reimportSpreadsheet(file: File): Promise<void> {
+    const id = this.currentFormId();
+    if (!id) throw new Error('No form is open.');
+    const saved = await this.transfer.reimportExcelFile(id, file);
+    this.loadSavedForm(saved);
+    this.setImportIssues(saved.importIssues ?? []);
+    this.refreshSavedForms();
+    this.telemetry.record('formOpen', 'reimported', id);
   }
 
   /**
@@ -554,7 +700,9 @@ export class FormStateService {
 
     return sections.map(sec => {
       let base = sec;
-      if (!sec.isMetadata && !sec.isAggregate && !sec.sourceRef) {
+      // A header imported without a Fachdatenbezeichner (sheetRow), or with no header row at all
+      // (headerless), keeps none: an invented name would make the export add a header row.
+      if (!sec.isMetadata && !sec.isAggregate && !sec.sourceRef && !sec.sheetRow && !sec.headerless) {
         const ref = this.makeUniqueName(used, sec.title || 'Section');
         used.add(ref);
         base = { ...sec, sourceRef: ref };
@@ -562,6 +710,7 @@ export class FormStateService {
       return ({
       ...base,
       components: base.components
+        .map(migrateOnChange)
         .map(comp => {
           if (comp.id === 'split-input' && comp.splitConfig) {
             return this.backfillSplitConfig(comp);
@@ -615,7 +764,7 @@ export class FormStateService {
     this.view.set('landing');
     this.currentFormId.set(null);
     this.hasSourceSpreadsheet.set(false);
-    this.importWarnings.set([]);
+    this.importIssues.set([]);
     this.selectedSectionIndex.set(null);
     this.selectedComponentIndex.set(null);
   }
@@ -703,7 +852,7 @@ export class FormStateService {
   availableLogicOptions = computed<LogicOption[]>(() => {
     const lang = this.displayLanguage();
     const out: LogicOption[] = [];
-    // Not electronic-consent: a platform macro renders that block downstream, and it
+    // Not electronic-consent: the platform renders that block from its own macro, which
     // emits its own radios with no id or onChange hook and no Input ID. json_builder drops
     // references to them, so a condition on one resolves to nothing and leaves the target
     // hidden for good — better not to offer it than to let it be picked.
@@ -945,6 +1094,7 @@ export class FormStateService {
       'text-area': { title: 'Message' },
       'date': { title: 'Date' },
       'number': { title: 'Number' },
+      'number-dropdown': { title: 'Quantity' },
       'email': { title: 'E-mail' },
       'phone': { title: 'Phone number' },
       'radio': { title: 'Question' },
@@ -1380,6 +1530,14 @@ export class FormStateService {
     this.deployment.update(d => ({ ...d, ...patch }));
   }
 
+  /**
+   * Base name the pipeline gives every generated artifact — the Developer base name when
+   * one is set, else the form title. Only a fallback for the download name here: the
+   * backend decides it, and says so in Content-Disposition.
+   */
+  outputBaseName = computed(() =>
+    outputBaseName(this.deployment().baseName, this.formTitle()));
+
   async generateJSONFromBackend() {
     const response = await fetch(`${environment.apiUrl}/api/generate-json`, {
       method: 'POST',
@@ -1395,8 +1553,13 @@ export class FormStateService {
   /**
    * Round-trip the imported spreadsheet: overlay the current builder edits onto the original
    * workbook stored with this form, append a Version row, and return the .xlsx blob.
+   *
+   * The file name comes back with it: a blank version is bumped from the workbook's own
+   * history server-side, so only the server knows which version was actually recorded.
    */
-  async exportSpreadsheetFromBackend(meta: { author: string; note: string; version: string }): Promise<Blob> {
+  async exportSpreadsheetFromBackend(
+    meta: { author: string; note: string; version: string }
+  ): Promise<{ blob: Blob; filename: string }> {
     const id = this.currentFormId();
     if (!id) throw new Error('Save the form before exporting.');
     const response = await fetch(`${environment.apiUrl}/api/forms/${encodeURIComponent(id)}/export-xlsx`, {
@@ -1417,11 +1580,16 @@ export class FormStateService {
     }
     // The export is now persisted server-side as the form's living spec, so it has a source.
     this.hasSourceSpreadsheet.set(true);
-    return await response.blob();
+    const fallback = `${exportFileName(this.formTitle(), meta.version)}.xlsx`;
+    return {
+      blob: await response.blob(),
+      filename: attachmentName(response.headers.get('Content-Disposition')) || fallback,
+    };
   }
 
   /**
-   * Render the current form and return the URL of the preview page the backend serves.
+   * Render the current form to a standalone HTML preview, in every language.
+   * Returns the URL of the rendered preview page (served by the backend).
    */
   async generatePreviewFromBackend(language: string = 'en'): Promise<string> {
     // Counted before the request, so an unreachable backend still registers the intent.

@@ -228,6 +228,14 @@
                   </span>
                 }
 
+                @if (component.id === 'number-dropdown') {
+                  <select disabled
+                          class="w-24 px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-gray-600">
+                    <option>1</option>
+                  </select>
+                  <span class="ml-2 text-xs text-gray-400">1 – {{ component.maxLength || 999 }}</span>
+                }
+
                 @if (component.id === 'email') {
                   <span class="block" [title]="getMouseOverTooltip(component)">
                     <input type="email"

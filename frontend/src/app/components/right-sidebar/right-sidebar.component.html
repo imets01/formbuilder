@@ -83,14 +83,18 @@
       <mat-tab label="Data">
         <div class="px-5 py-4 space-y-4">
           <div>
-            <label class="block text-xs font-medium text-gray-600 mb-1">Field Name</label>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Field Name (Fachdatenbezeichner)</label>
             <input
               type="text"
               [ngModel]="section.sourceRef"
               (ngModelChange)="updateProperty('sourceRef', $event)"
               (paste)="onSectionDataPaste($event, 'fieldName')"
               placeholder="Field_Name1"
+              [class.!border-red-400]="fieldNameError(section.sourceRef)"
               class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+            @if (fieldNameError(section.sourceRef)) {
+              <p class="text-[11px] text-red-600 mt-1">{{ fieldNameError(section.sourceRef) }}</p>
+            }
             <p class="text-[11px] text-gray-500 mt-1">The header row's Fachdatenbezeichner. Must be unique form-wide.</p>
           </div>
 
@@ -145,7 +149,11 @@
               [ngModel]="section.aggregateFachdatenbezeichner"
               (ngModelChange)="updateProperty('aggregateFachdatenbezeichner', $event)"
               placeholder="Aggregate_Name1"
+              [class.!border-red-400]="fieldNameError(section.aggregateFachdatenbezeichner)"
               class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+            @if (fieldNameError(section.aggregateFachdatenbezeichner)) {
+              <p class="text-[11px] text-red-600 mt-1">{{ fieldNameError(section.aggregateFachdatenbezeichner) }}</p>
+            }
           </div>
 
           <div>
@@ -488,8 +496,8 @@
                 <div class="border border-gray-200 rounded-md overflow-hidden">
                   <div class="grid grid-cols-[1fr_auto_auto_auto] gap-2 px-2 py-1.5 bg-gray-50 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                     <span>Label ({{ formState.displayLanguage() }})</span>
-                    <span class="w-28">Field Name</span>
-                    <span class="w-24">Ref ID</span>
+                    <span class="w-28" title="Field Name (Fachdatenbezeichner)">Field Name</span>
+                    <span class="w-24">{{ optionsTakeRefId(component.id) ? 'Ref ID' : '' }}</span>
                     <span class="w-5"></span>
                   </div>
                   @for (row of filteredOptions(component); track row.opt.optionId) {
@@ -513,14 +521,20 @@
                           (input)="updateOptionField(row.originalIndex, 'fieldName', $any($event.target).value)"
                           (paste)="onOptionDataPaste($event, row.opt.optionId, 'fieldName')"
                           placeholder="—"
+                          [class.!border-red-400]="fieldNameError(row.opt.fieldName)"
+                          [title]="fieldNameError(row.opt.fieldName)"
                           class="w-28 h-6 px-1.5 text-[11px] border border-gray-200 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-300" />
-                        <input
-                          type="text"
-                          [value]="row.opt.refID ?? ''"
-                          (input)="updateOptionField(row.originalIndex, 'refID', $any($event.target).value)"
-                          (paste)="onOptionDataPaste($event, row.opt.optionId, 'refID')"
-                          placeholder="—"
-                          class="w-24 h-6 px-1.5 text-[11px] border border-gray-200 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-300" />
+                        @if (optionsTakeRefId(component.id)) {
+                          <input
+                            type="text"
+                            [value]="row.opt.refID ?? ''"
+                            (input)="updateOptionField(row.originalIndex, 'refID', $any($event.target).value)"
+                            (paste)="onOptionDataPaste($event, row.opt.optionId, 'refID')"
+                            placeholder="—"
+                            class="w-24 h-6 px-1.5 text-[11px] border border-gray-200 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-300" />
+                        } @else {
+                          <span class="w-24"></span>
+                        }
                         <button type="button"
                                 (click)="removeOption(row.originalIndex)"
                                 class="p-0.5 text-gray-300 hover:text-red-600"
@@ -619,25 +633,31 @@
 
                     <div class="grid grid-cols-2 gap-2 pt-1">
                       <div>
-                        <label class="block text-xs text-gray-500 mb-0.5">Field Name</label>
+                        <label class="block text-xs text-gray-500 mb-0.5">Field Name (Fachdatenbezeichner)</label>
                         <input
                           type="text"
                           [value]="opt.fieldName ?? ''"
                           (input)="updateOptionField(optIdx, 'fieldName', $any($event.target).value)"
                           (paste)="onOptionDataPaste($event, opt.optionId, 'fieldName')"
                           placeholder="Optional"
+                          [class.!border-red-400]="fieldNameError(opt.fieldName)"
                           class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                        @if (fieldNameError(opt.fieldName)) {
+                          <p class="text-[11px] text-red-600 mt-1">{{ fieldNameError(opt.fieldName) }}</p>
+                        }
                       </div>
-                      <div>
-                        <label class="block text-xs text-gray-500 mb-0.5">Ref ID</label>
-                        <input
-                          type="text"
-                          [value]="opt.refID ?? ''"
-                          (input)="updateOptionField(optIdx, 'refID', $any($event.target).value)"
-                          (paste)="onOptionDataPaste($event, opt.optionId, 'refID')"
-                          placeholder="Optional"
-                          class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
-                      </div>
+                      @if (optionsTakeRefId(component.id)) {
+                        <div>
+                          <label class="block text-xs text-gray-500 mb-0.5">Ref ID</label>
+                          <input
+                            type="text"
+                            [value]="opt.refID ?? ''"
+                            (input)="updateOptionField(optIdx, 'refID', $any($event.target).value)"
+                            (paste)="onOptionDataPaste($event, opt.optionId, 'refID')"
+                            placeholder="Optional"
+                            class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                        </div>
+                      }
                     </div>
                     <ng-container *ngTemplateOutlet="pasteHintBlock; context: { $implicit: 'optiondata:' + component.instanceId + ':' + opt.optionId, indent: 'mt-1' }"></ng-container>
                   }
@@ -650,7 +670,13 @@
                 <mat-icon class="!w-4 !h-4 !text-[16px]">add</mat-icon>
                 Add Option
               </button>
-              <p class="text-[11px] text-gray-500 mt-2">RefID is required for distinct values; skip it for plain Yes/No.</p>
+              @if (optionsTakeRefId(component.id)) {
+                <p class="text-[11px] text-gray-500 mt-2">RefID is required for distinct values; skip it for plain Yes/No.</p>
+              } @else {
+                <p class="text-[11px] text-gray-500 mt-2">
+                  No Ref IDs here: each language submits the platform's own correspondence-language id.
+                </p>
+              }
               }
             </div>
           }
@@ -720,6 +746,21 @@
                 </div>
               }
 
+              @if (isNumberDropdown(component.id)) {
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Highest number</label>
+                  <input
+                    type="number"
+                    min="1"
+                    [max]="numberDropdownMax"
+                    [ngModel]="component.maxLength"
+                    (ngModelChange)="updateProperty('maxLength', $event)"
+                    [placeholder]="numberDropdownMax"
+                    class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                  <p class="text-[11px] text-gray-500 mt-1">The list offers 1 up to this number. Blank means {{ numberDropdownMax }}, the most it allows.</p>
+                </div>
+              }
+
               @if (isNumericRange(component.id)) {
                 <div class="grid grid-cols-2 gap-3">
                   <div>
@@ -780,15 +821,20 @@
         <div class="px-5 py-4 space-y-4">
           @if (!isSplitInput(component.id)) {
             <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Field Name</label>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Field Name (Fachdatenbezeichner)</label>
               <input
                 type="text"
                 [ngModel]="component.fieldName"
                 (ngModelChange)="updateProperty('fieldName', $event)"
                 (paste)="onComponentDataPaste($event, 'fieldName')"
                 placeholder="Field_Name1"
+                [class.!border-red-400]="fieldNameError(component.fieldName)"
                 class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+              @if (fieldNameError(component.fieldName)) {
+                <p class="text-[11px] text-red-600 mt-1">{{ fieldNameError(component.fieldName) }}</p>
+              }
               <p class="text-[11px] text-gray-500 mt-1">Used as the exported JSON key and subject identifier.</p>
+              <ng-container *ngTemplateOutlet="missingName; context: { $implicit: missingNameHint(component.id, component.fieldName, component.sheetRow) }"></ng-container>
             </div>
           }
           @if (isSplitInput(component.id)) {
@@ -796,14 +842,19 @@
               <div class="space-y-3">
                 <p class="text-sm font-semibold text-gray-800">Input {{ side === 'a' ? '1' : '2' }}</p>
                 <div>
-                  <label class="block text-xs font-medium text-gray-600 mb-1">Field Name</label>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Field Name (Fachdatenbezeichner)</label>
                   <input
                     type="text"
                     [value]="getSplitDataField($any(side), 'fieldName')"
                     (input)="updateSplitDataField($any(side), 'fieldName', $any($event.target).value)"
                     (paste)="onSplitDataPaste($event, $any(side), 'fieldName')"
                     [placeholder]="side === 'a' ? 'Field_Name1' : 'Field_Vorname1'"
+                    [class.!border-red-400]="fieldNameError(getSplitDataField($any(side), 'fieldName'))"
                     class="w-full h-9 px-3 text-sm border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                  <ng-container *ngTemplateOutlet="missingName; context: { $implicit: missingNameHint(component.id, getSplitDataField($any(side), 'fieldName'), splitSheetRow($any(side))) }"></ng-container>
+                  @if (fieldNameError(getSplitDataField($any(side), 'fieldName'))) {
+                    <p class="text-[11px] text-red-600 mt-1">{{ fieldNameError(getSplitDataField($any(side), 'fieldName')) }}</p>
+                  }
                 </div>
                 <div>
                   <label class="block text-xs font-medium text-gray-600 mb-1">Ref ID</label>
@@ -858,6 +909,47 @@
 
           <mat-divider></mat-divider>
             
+          @if (supportsDeveloperAttrs(component.id)) {
+            <div class="space-y-3">
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Developer</p>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Event</label>
+                <input
+                  type="text"
+                  [ngModel]="component.events"
+                  (ngModelChange)="updateProperty('events', $event)"
+                  placeholder='onchange="myCheck(this);"'
+                  class="w-full h-9 px-3 text-sm font-mono border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                <p class="text-[11px] text-gray-400 mt-1">
+                  As in HTML, any event: onchange, onblur, oninput… Several are fine, separated by
+                  spaces. An onchange runs after the field's built-in check. The functions have to
+                  exist on the page.
+                </p>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Inline style</label>
+                <input
+                  type="text"
+                  [ngModel]="component.inputStyle"
+                  (ngModelChange)="updateProperty('inputStyle', $event)"
+                  placeholder="width: 12em;"
+                  class="w-full h-9 px-3 text-sm font-mono border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">CSS class</label>
+                <input
+                  type="text"
+                  [ngModel]="component.inputClass"
+                  (ngModelChange)="updateProperty('inputClass', $event)"
+                  placeholder="my-class"
+                  class="w-full h-9 px-3 text-sm font-mono border border-gray-200 rounded-md bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 focus:border-blue-400" />
+                <p class="text-[11px] text-gray-400 mt-1">Space-separated. Letters, digits, - and _ only.</p>
+              </div>
+            </div>
+
+            <mat-divider></mat-divider>
+          }
+
           <div>
             <label class="block text-xs font-medium text-gray-600 mb-1">Comments for devs</label>
             <textarea
@@ -920,6 +1012,21 @@
         (ngModelChange)="updateProperty('hiddenField', $event)">
       </mat-slide-toggle>
     </div>
+  </ng-template>
+
+  <ng-template #missingName let-hint>
+    @if (hint === 'required') {
+      <p class="text-[11px] text-amber-700 mt-1">Required before Generate.</p>
+    } @else if (hint === 'reimport') {
+      <p class="flex items-start gap-1 text-[11px] text-amber-700 mt-1">
+        <mat-icon class="!w-[14px] !h-[14px] !text-[14px] shrink-0 mt-px">warning</mat-icon>
+        <span>
+          Required before Generate. This form was imported before the builder remembered each
+          field's row, so <span class="font-semibold underline">re-import the spreadsheet once</span>
+          before filling it in here. Otherwise the builder will add a duplicate row to the Excel.
+        </span>
+      </p>
+    }
   </ng-template>
 
   <!-- Shared show/hide logic editor, used by both the component Logic tab and the section Visibility panel.

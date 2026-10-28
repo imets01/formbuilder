@@ -13,7 +13,9 @@ there or in the client.
 ## Document shape
 
 ```
-SavedForm            id, title, updatedAt, hasSource?
+SavedForm            id, title, updatedAt, hasSource?, sourceFileName?, importedAt?
+├─ importIssues[]    code, message, row, sheet, label?, fieldName?, inputId?, target?,
+│                    fixedAt?, ambiguous?        (outside payload: not part of undo)
 └─ payload           formTitle, disableInputSize, disableMouseOver
    ├─ deployment     compName, usrId, usrIdDev, contactEmail, de/fr/it/enId,
    │                 validatorClass, wikiLink, issueLink
@@ -55,6 +57,29 @@ deleted option resolve to nothing and are dropped.
 that name is both the filename base and an identifier inside the generated files — so
 "Permit (2)" and "Permit 2" are one name. A colliding *rename* is refused; creates and
 imports get a free " (n)" variant. `form-title.ts` applies the same rule client-side.
+
+## Import issues
+
+A form imported from a spreadsheet keeps what the importer could not reconstruct, so the
+list can be reopened at any time instead of being seen once. The count beside the form
+title is the *outstanding* ones, recomputed from the live document on every edit:
+
+| `code` prefix | Clears itself when | Set by |
+|---|---|---|
+| `format-*`, `option-*`, `group-*` | a field, option or section of that name (or Fachdatenbezeichner) exists on the canvas | `isAutoResolved`, `field-exists` |
+| `logic-unreadable`, `logic-dangling-ref` | the field or section named in `target` carries any show/hide condition | `isAutoResolved`, `logic-present` |
+| `logic-unbalanced`, `aggregate-*` | never on its own — only `fixedAt`, set by the user | — |
+
+`ambiguous` is set at import time for a finding its own import already satisfies (a skipped
+row whose label another field happens to carry). Its name match proves nothing, so it needs
+a human. Codes the client does not know fall back to the same manual check.
+
+Fixing it in the spreadsheet instead is the re-import path: `POST /api/forms/<id>/reimport`
+replaces the form in place and rebuilds the list from the new sheet, so the form never has
+to be deleted and imported again.
+
+Rules in [`import-issues.ts`](../frontend/src/app/services/import-issues.ts), findings
+raised by `_issue` in [`excel_importer.py`](../backend/excel_importer.py).
 
 ## Logic
 

@@ -21,17 +21,25 @@ from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
 from excel_importer import import_spreadsheet
-from spreadsheet_exporter import export_spreadsheet
-from json_builder import build_form_json, safe_form_name
+from field_names import InvalidFieldNames
+from spreadsheet_exporter import export_spreadsheet_versioned
+from json_builder import build_form_json, export_file_name
 import dictionary
 import forms_store
 import stub_renderer
 
 app = Flask(__name__)
-CORS(app)
+# Content-Disposition is exposed because the builder is served from another origin and reads
+# the download name the export routes choose, rather than inventing its own.
+CORS(app, expose_headers=['Content-Disposition'])
 
 # Preserve insertion order in the JSON output (Flask 3.x API).
 app.json.sort_keys = False
+
+
+@app.errorhandler(InvalidFieldNames)
+def invalid_field_names(exc):
+    return jsonify(status="error", message=str(exc), fieldNames=exc.names), 400
 
 
 @app.route('/')
@@ -135,6 +143,39 @@ def import_excel():
     return jsonify(status="success", payload=payload)
 
 
+@app.route('/api/forms/<form_id>/reimport', methods=['POST'])
+def reimport_form(form_id):
+    """Replace a saved form's content from a freshly uploaded spreadsheet.
+
+    Keeps the form's id (so links and the stored source stay valid) and the settings the
+    sheet cannot express; see forms_store.merge_reimport. A sheet that fails to parse
+    leaves the stored form untouched.
+    """
+    file = request.files.get('file')
+    if file is None or not file.filename:
+        return jsonify(status="error", message="No file uploaded."), 400
+    raw = file.read()
+    try:
+        payload = import_spreadsheet(raw, file.filename)
+    except Exception as exc:
+        return jsonify(status="error", message=str(exc)), 400
+    if not payload.get('sections'):
+        return jsonify(status="error", message="The spreadsheet produced no fields."), 400
+    try:
+        saved = forms_store.reimport_form(
+            form_id, payload, payload.get('issues') or [], source_name=file.filename)
+    except forms_store.InvalidFormId as exc:
+        return jsonify(status="error", message=str(exc)), 400
+    except forms_store.DuplicateFormTitle as exc:
+        return jsonify(status="error", message=str(exc), conflictId=exc.existing_id), 409
+    if saved is None:
+        return jsonify(status="error", message="form not found"), 404
+    # The new workbook becomes the form's living spec, so later exports round-trip from it.
+    forms_store.save_source(form_id, raw)
+    saved['hasSource'] = True
+    return jsonify(saved)
+
+
 @app.route('/api/forms/<form_id>/source', methods=['POST'])
 def upload_form_source(form_id):
     """Store the original imported spreadsheet alongside a form, for later round-trip export."""
@@ -143,6 +184,8 @@ def upload_form_source(form_id):
         return jsonify(status="error", message="No file uploaded."), 400
     try:
         forms_store.save_source(form_id, file.read())
+        # Kept with the form so the list can tell two same-titled imports apart.
+        forms_store.set_source_name(form_id, file.filename)
     except forms_store.InvalidFormId as exc:
         return jsonify(status="error", message=str(exc)), 400
     return jsonify(status="success")
@@ -166,7 +209,7 @@ def export_form_xlsx(form_id):
         return jsonify(status="error", message=str(exc)), 400
     # No stored source → the form was built from scratch; generate a fresh PSPH workbook.
     try:
-        data = export_spreadsheet(
+        data, recorded_version = export_spreadsheet_versioned(
             source,
             body.get('payload') or {},
             author=author,
@@ -181,7 +224,7 @@ def export_form_xlsx(form_id):
     return send_file(
         io.BytesIO(data),
         as_attachment=True,
-        download_name=f"{safe_form_name(body.get('filename') or 'form')}.xlsx",
+        download_name=f"{export_file_name(body.get('filename') or 'form', recorded_version)}.xlsx",
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
 

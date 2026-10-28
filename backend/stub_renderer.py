@@ -19,15 +19,19 @@ _LANG_KEY = {"de": "DE", "en": "EN", "fr": "FR", "it": "IT"}
 
 _UI_TEXT = {
     "de": {"submit": "Senden", "required": "Pflichtfeld", "conditional": "bedingt eingeblendet",
+           "hidden": "standardmässig verborgen",
            "aggregate": "Wiederholbarer Block", "upload": "Datei auswählen",
            "demo": "Vorschau — das Formular kann hier nicht abgeschickt werden"},
     "en": {"submit": "Submit", "required": "required", "conditional": "shown conditionally",
+           "hidden": "hidden by default",
            "aggregate": "Repeatable block", "upload": "Choose file",
            "demo": "Preview — this form cannot be submitted here"},
     "fr": {"submit": "Envoyer", "required": "obligatoire", "conditional": "affiché sous condition",
+           "hidden": "masqué par défaut",
            "aggregate": "Bloc répétable", "upload": "Choisir un fichier",
            "demo": "Aperçu — ce formulaire ne peut pas être envoyé ici"},
     "it": {"submit": "Invia", "required": "obbligatorio", "conditional": "mostrato condizionalmente",
+           "hidden": "nascosto per impostazione predefinita",
            "aggregate": "Blocco ripetibile", "upload": "Scegli un file",
            "demo": "Anteprima — questo modulo non può essere inviato qui"},
 }
@@ -142,14 +146,21 @@ def _has_logic(node: dict) -> bool:
 
 
 def _flag(node: dict, lang: str) -> str:
-    if not _has_logic(node):
+    if _has_logic(node):
+        key = "conditional"
+    elif node.get("hiddenField"):
+        key = "hidden"
+    else:
         return ""
-    return f'<span class="flag">{_UI_TEXT[lang]["conditional"]}</span>'
+    return f'<span class="flag">{_UI_TEXT[lang][key]}</span>'
 
 
 def _required(component: dict) -> bool:
+    # The document carries this at the top level; the validation dict is only a fallback
+    # for payloads that nest it (see json_builder, which reads comp['required']).
     validation = component.get("validation") or {}
-    return bool(validation.get("required") or validation.get("mandatory"))
+    return bool(component.get("required")
+                or validation.get("required") or validation.get("mandatory"))
 
 
 def _label(component: dict, lang: str, text: str = "") -> str:
@@ -205,9 +216,22 @@ def _option_field(component: dict, lang: str, group: str) -> str:
     return f"<fieldset>{legend}{items}</fieldset>"
 
 
+_NUMBER_DROPDOWN_MAX = 999
+
+
+def _number_dropdown_field(component: dict, lang: str) -> str:
+    try:
+        highest = int(component.get("maxLength") or _NUMBER_DROPDOWN_MAX)
+    except (TypeError, ValueError):
+        highest = _NUMBER_DROPDOWN_MAX
+    highest = max(1, min(highest, _NUMBER_DROPDOWN_MAX))
+    items = "".join(f"<option>{n}</option>" for n in range(1, highest + 1))
+    return f'<div class="field">{_label(component, lang)}<select>{items}</select></div>'
+
+
 def _upload_field(component: dict, lang: str) -> str:
     multiple = " multiple" if component.get("id") == "upload-multi" else ""
-    formats = (component.get("validation") or {}).get("fileFormats")
+    formats = component.get("fileFormats") or (component.get("validation") or {}).get("fileFormats")
     hint = f'<div class="hint">{html.escape(str(formats))}</div>' if formats else ""
     return f'<div class="field">{_label(component, lang)}' \
            f'<input type="file"{multiple}>{hint}</div>'
@@ -240,6 +264,8 @@ def _component(component: dict, lang: str) -> str:
         return _split_field(component, lang)
     if comp_id in ("upload-single", "upload-multi"):
         return _upload_field(component, lang)
+    if comp_id == "number-dropdown":
+        return _number_dropdown_field(component, lang)
     if comp_id == "single-checkbox":
         return _checkbox_field(component, lang)
     if comp_id == "button":

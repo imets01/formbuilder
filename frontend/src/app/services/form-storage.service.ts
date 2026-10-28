@@ -3,10 +3,13 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, of } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { FormSection } from './form-state.service';
+import type { ImportIssue } from './import-issues';
 import { environment } from '../../environments/environment';
 
-/** Project-specific values carried into the generated deployment artifacts. */
+/** Project-specific values needed to deploy the generated form downstream. */
 export interface DeploymentSettings {
+  /** Base name of every generated artifact; blank = derived from the form title. */
+  baseName: string;
   compName: string;
   usrId: string;          
   usrIdDev: string;      
@@ -35,12 +38,20 @@ export interface SavedForm {
   payload: SavedFormPayload;
   /** Set by the server when an imported-source spreadsheet is stored (enables round-trip export). */
   hasSource?: boolean;
+  /** Findings from the spreadsheet import this form came from, outstanding ones included. */
+  importIssues?: ImportIssue[];
+  /** When the form was last (re-)imported from a spreadsheet. */
+  importedAt?: number;
+  /** Name of the spreadsheet this form was imported from, as uploaded. Server-owned. */
+  sourceFileName?: string;
 }
 
 export interface SavedFormSummary {
   id: string;
   title: string;
   updatedAt: number;
+  /** Name of the spreadsheet this form was imported from; empty for forms built in the builder. */
+  sourceFileName?: string;
 }
 
 @Injectable({ providedIn: 'root' })

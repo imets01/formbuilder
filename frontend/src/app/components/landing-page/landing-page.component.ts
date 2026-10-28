@@ -5,6 +5,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { FormStateService } from '../../services/form-state.service';
 import { FormStorageService, SavedFormSummary } from '../../services/form-storage.service';
 import { FormTransferService } from '../../services/form-transfer.service';
+import { confirmReimport } from '../../services/import-issues';
 
 @Component({
   selector: 'app-landing-page',
@@ -86,15 +87,14 @@ export class LandingPageComponent {
     if (!file) return;
 
     this.importing.set(true);
-    this.transfer.importExcelFile(file).then(({ payload, skipped }) => {
-      this.transfer.importAsNewForm(payload).subscribe({
+    this.transfer.importExcelFile(file).then(({ payload, issues }) => {
+      this.transfer.importAsNewForm(payload, issues).subscribe({
         next: form => {
           // Keep the original workbook with the form so it can be round-tripped on export.
           // Best-effort: a failed source upload only disables the spreadsheet export.
           this.transfer.uploadSource(form.id, file).finally(() => {
             this.importing.set(false);
-            this.formState.openForm(form.id);
-            this.formState.importWarnings.set(skipped);
+            this.formState.openForm(form.id, { revealImportIssues: true });
           });
         },
         error: () => {
@@ -106,6 +106,43 @@ export class LandingPageComponent {
       this.importing.set(false);
       alert(`Could not import this spreadsheet.\n\n${err instanceof Error ? err.message : String(err)}`);
     });
+  }
+
+  /**
+   * Re-import a corrected spreadsheet over one existing form.
+   *
+   * The alternative to deleting the form and importing again: the form keeps its id, its
+   * name and the settings only the builder holds, and its import issues are replaced by
+   * the new sheet's.
+   */
+  reimportTarget = signal<SavedFormSummary | null>(null);
+
+  startReimport(event: Event, form: SavedFormSummary) {
+    event.stopPropagation();
+    this.reimportTarget.set(form);
+  }
+
+  onReimportFileSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    const target = this.reimportTarget();
+    this.reimportTarget.set(null);
+    if (!file || !target) return;
+
+    if (!confirmReimport(file.name, target.title)) return;
+
+    this.importing.set(true);
+    this.transfer.reimportExcelFile(target.id, file)
+      .then(form => {
+        this.importing.set(false);
+        this.refresh();
+        this.formState.openForm(form.id, { revealImportIssues: true });
+      })
+      .catch(err => {
+        this.importing.set(false);
+        alert(`Could not re-import this spreadsheet.\n\n${err instanceof Error ? err.message : String(err)}`);
+      });
   }
 
   formatDate(ts: number): string {
