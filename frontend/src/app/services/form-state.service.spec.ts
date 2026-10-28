@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController, TestRequest } from '@angular/common/http/testing';
 import { FormStateService } from './form-state.service';
+import { AuthService } from './auth.service';
 
 /** Real timers, not fakeAsync: TestBed.tick() doesn't reliably flush the effect feeding
  *  saveTrigger under fakeAsync, which flaked about one run in six. */
@@ -16,6 +17,7 @@ describe('FormStateService autosave', () => {
     TestBed.configureTestingModule({
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
+    TestBed.inject(AuthService).canWrite.set(true);  // not a demo visitor
     form = TestBed.inject(FormStateService);
     http = TestBed.inject(HttpTestingController);
   });
@@ -42,6 +44,16 @@ describe('FormStateService autosave', () => {
     form.formTitle.set(title);
     return settleSaves();
   };
+
+  it('saves nothing for a demo visitor', async () => {
+    TestBed.inject(AuthService).canWrite.set(false);
+    await startForm();
+
+    const saves = await editAndSettle('Permit application');
+
+    expect(saves.length).toBe(0);
+    http.verify();
+  });
 
   it('saves an edit', async () => {
     await startForm();

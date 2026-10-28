@@ -4,6 +4,7 @@ import { FormStorageService, SavedForm, SavedFormPayload } from './form-storage.
 import { ImportIssue, annotateAmbiguity } from './import-issues';
 import { environment } from '../../environments/environment';
 import { safeFormName } from './form-name';
+import { AuthService } from './auth.service';
 
 /**
  * Exports a form to a JSON file and imports one back, so a form can be saved,
@@ -28,6 +29,7 @@ interface FormExportFile {
 @Injectable({ providedIn: 'root' })
 export class FormTransferService {
   private storage = inject(FormStorageService);
+  private auth = inject(AuthService);
 
   /** Build the envelope for a form and trigger a download as <title>.json. */
   exportToFile(title: string, payload: SavedFormPayload): void {
@@ -137,7 +139,8 @@ export class FormTransferService {
     try {
       const res = await fetch(
         `${environment.apiUrl}/api/forms/${encodeURIComponent(formId)}/source`,
-        { method: 'POST', body }
+        // fetch, not HttpClient, so the interceptor doesn't add the admin key for us.
+        { method: 'POST', body, headers: this.auth.token ? { 'X-Admin-Token': this.auth.token } : {} }
       );
       return res.ok;
     } catch {

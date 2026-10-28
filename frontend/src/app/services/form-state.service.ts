@@ -9,6 +9,7 @@ import { TelemetryService } from './telemetry.service';
 import { ImportIssue, annotateAmbiguity, issueKey, outstandingIssues } from './import-issues';
 import { FormTransferService } from './form-transfer.service';
 import { exportFileName, outputBaseName } from './form-name';
+import { AuthService } from './auth.service';
 import { environment } from '../../environments/environment';
 
 export type AppView = 'landing' | 'editor';
@@ -298,6 +299,7 @@ export class FormStateService {
   private storage = inject(FormStorageService);
   private transfer = inject(FormTransferService);
   private telemetry = inject(TelemetryService);
+  private auth = inject(AuthService);
 
   sections = signal<FormSection[]>([
     { id: `Section_${Date.now()}`, title: 'Section', components: [] }
@@ -427,6 +429,8 @@ export class FormStateService {
     effect(() => {
       const id = this.currentFormId();
       if (!id || this.view() !== 'editor') return;
+      // Demo visitors edit in memory only; the server would refuse the save anyway.
+      if (!this.auth.canWrite()) return;
       // Track signals so the effect re-runs on edits.
       const payload = this.savedPayload();
       // Sent on every save: the stored form is replaced wholesale, so leaving these
@@ -637,6 +641,22 @@ export class FormStateService {
       if (options.revealImportIssues) this.importIssuesJustArrived.update(n => n + 1);
       this.telemetry.record('formOpen', 'saved', saved.id);
     });
+  }
+
+  /** Open an imported form without storing it — what demo visitors get instead of a save. */
+  openUnsaved(payload: SavedFormPayload, issues: ImportIssue[] = []) {
+    this.displayLanguage.set(DEFAULT_LANGUAGE);
+    this.titleConflict.set(null);
+    const id = this.storage.newId();
+    this.loadSavedForm({
+      id,
+      title: payload.formTitle || DEFAULT_FORM_TITLE,
+      updatedAt: Date.now(),
+      payload
+    });
+    this.setImportIssues(issues);
+    if (issues.length) this.importIssuesJustArrived.update(n => n + 1);
+    this.telemetry.record('formOpen', 'import', id);
   }
 
   /** Put a form fetched from the server onto the canvas, replacing whatever is there. */

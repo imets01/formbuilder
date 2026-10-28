@@ -6,6 +6,7 @@ import { FormStateService } from '../../services/form-state.service';
 import { FormStorageService, SavedFormSummary } from '../../services/form-storage.service';
 import { FormTransferService } from '../../services/form-transfer.service';
 import { confirmReimport } from '../../services/import-issues';
+import { AuthService } from '../../services/auth.service';
 
 @Component({
   selector: 'app-landing-page',
@@ -18,6 +19,8 @@ export class LandingPageComponent {
   private formState = inject(FormStateService);
   private storage = inject(FormStorageService);
   private transfer = inject(FormTransferService);
+  /** False in demo mode: no delete, and imports open in memory instead of being saved. */
+  canWrite = inject(AuthService).canWrite;
 
   forms = signal<SavedFormSummary[]>([]);
   importing = signal<boolean>(false);
@@ -63,6 +66,11 @@ export class LandingPageComponent {
     this.importing.set(true);
     file.text().then(text => {
       const payload = this.transfer.parseFile(text);  // throws on bad input
+      if (!this.canWrite()) {
+        this.importing.set(false);
+        this.formState.openUnsaved(payload);
+        return;
+      }
       this.transfer.importAsNewForm(payload).subscribe({
         next: form => {
           this.importing.set(false);
@@ -88,6 +96,11 @@ export class LandingPageComponent {
 
     this.importing.set(true);
     this.transfer.importExcelFile(file).then(({ payload, issues }) => {
+      if (!this.canWrite()) {
+        this.importing.set(false);
+        this.formState.openUnsaved(payload, issues);
+        return;
+      }
       this.transfer.importAsNewForm(payload, issues).subscribe({
         next: form => {
           // Keep the original workbook with the form so it can be round-tripped on export.
